@@ -65,13 +65,43 @@ func (r *Runner) Loop(ctx context.Context) {
 }
 
 func (r *Runner) SyncOnce(ctx context.Context) error {
-	select {
-	case r.gate <- struct{}{}:
-		defer func() { <-r.gate }()
-	default:
-		return errors.New("sync already running")
+	if !r.acquire() {
+		return ErrSyncBusy
+	}
+	defer r.release()
+
+	return r.runCycle(ctx)
+}
+
+// StartSyncAll 在后台跑一轮全量同步；已有任务在跑时返回 ErrSyncBusy。
+func (r *Runner) StartSyncAll(ctx context.Context) error {
+	if !r.acquire() {
+		return ErrSyncBusy
 	}
 
+	go func() {
+		defer r.release()
+		if err := r.runCycle(ctx); err != nil {
+			log.Printf("manual sync completed with errors: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (r *Runner) acquire() bool {
+	select {
+	case r.gate <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runner) release() {
+	<-r.gate
+}
+
+func (r *Runner) runCycle(ctx context.Context) error {
 	startedAt := time.Now()
 	r.store.Begin(startedAt)
 	defer func() { r.store.Finish(time.Now()) }()
@@ -136,6 +166,39 @@ func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
 		collected = append(collected, result)
 	}
 	return collected
+}
+
+// 同步触发相关的错误。
+var (
+	ErrRepoNotManaged = errors.New("repository is not managed")
+	ErrSyncBusy       = errors.New("sync already running")
+)
+
+// SyncOne 立刻同步指定仓库，供按需拉取使用。
+func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error) {
+	var target repoindex.Repository
+	found := false
+	for _, repo := range r.repos {
+		if repo.Name == name {
+			target = repo
+			found = true
+			break
+		}
+	}
+	if !found {
+		return gitops.Result{}, ErrRepoNotManaged
+	}
+
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	default:
+		return gitops.Result{}, ErrSyncBusy
+	}
+
+	result := r.syncOne(ctx, target)
+	logResult(result)
+	return result, nil
 }
 
 // syncOne 处理单个仓库：先看是否被体积保护拦下，再同步，最后守卫体积。

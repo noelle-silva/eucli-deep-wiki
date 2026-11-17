@@ -233,6 +233,59 @@ func (c *Client) stream(ctx context.Context, path string, query url.Values, w io
 	return err
 }
 
+// SyncResult 是一次按需同步的结果。
+type SyncResult struct {
+	Name     string `json:"name"`
+	Action   string `json:"action"`
+	Branch   string `json:"branch,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Duration int64  `json:"duration"`
+}
+
+// SyncRepo 触发单个仓库的立即同步。
+func (c *Client) SyncRepo(ctx context.Context, name string) (SyncResult, error) {
+	var result SyncResult
+	path := "/v1/repos/" + url.PathEscape(name) + "/sync"
+	if err := c.postSync(ctx, path, &result); err != nil {
+		return SyncResult{}, err
+	}
+	return result, nil
+}
+
+// SyncAll 触发一轮全量同步，服务端立即返回。
+func (c *Client) SyncAll(ctx context.Context) error {
+	return c.postSync(ctx, "/v1/sync", nil)
+}
+
+func (c *Client) postSync(ctx context.Context, path string, out any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	request.Header.Set("Accept", "application/json")
+
+	// 单个大仓库的同步可能持续几分钟，这里单独放宽超时。
+	client := &http.Client{Timeout: 15 * time.Minute}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
+		return decodeError(response.StatusCode, body)
+	}
+	if out == nil || len(body) == 0 {
+		return nil
+	}
+	return json.Unmarshal(body, out)
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
 	endpoint := c.baseURL + path
 	if len(query) > 0 {

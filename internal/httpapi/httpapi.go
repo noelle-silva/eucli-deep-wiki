@@ -19,6 +19,7 @@ type Options struct {
 	Store      StatusStore
 	Vault      *vault.Vault
 	Auth       *Authenticator
+	Sync       SyncTrigger
 	CacheDir   string
 	GitTimeout time.Duration
 }
@@ -43,6 +44,11 @@ func NewRouter(options Options) http.Handler {
 		showBundle(options.Vault, options.CacheDir, options.GitTimeout, shared),
 	))
 	mux.Handle("GET /v1/archive", options.Auth.Wrap(showMultiArchive(options.Vault)))
+
+	if options.Sync != nil {
+		mux.Handle("POST /v1/repos/{name}/sync", options.Auth.Wrap(syncRepository(options.Sync)))
+		mux.Handle("POST /v1/sync", options.Auth.Wrap(syncAllRepositories(options.Sync)))
+	}
 
 	return mux
 }

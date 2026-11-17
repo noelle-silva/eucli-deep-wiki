@@ -26,6 +26,7 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   get [参数] <仓库> <路径>        读取文件内容
   tree [参数] <仓库> [目录]       列出目录
   search [参数] <仓库> <关键词>   在仓库内检索
+  sync <仓库> | sync --all        立刻同步，不等定时轮
   pull <仓库>[:路径] ... [-o 文件]  下载快照包（zip / tar.gz）
   bundle <仓库> [-o 文件]         下载带历史的 bundle
 
@@ -76,6 +77,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runPull(rest, stdout, stderr)
 	case "bundle":
 		return runBundle(rest, stdout, stderr)
+	case "sync":
+		return runSync(rest, stdout, stderr)
 	case "config":
 		return runConfig(rest, stdout, stderr)
 	default:

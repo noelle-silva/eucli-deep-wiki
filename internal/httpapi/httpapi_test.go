@@ -261,12 +261,26 @@ func authorized(method string, target string) *http.Request {
 	return request
 }
 
+func authorizedRequest(method string, target string) *http.Request {
+	return authorized(method, target)
+}
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
-	return newTestRouterWithKeys(t, []string{testAPIKey})
+	return buildRouter(t, []string{testAPIKey}, nil)
 }
 
 func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
+	t.Helper()
+	return buildRouter(t, keys, nil)
+}
+
+func newTestRouterWithSync(t *testing.T, trigger SyncTrigger) http.Handler {
+	t.Helper()
+	return buildRouter(t, []string{testAPIKey}, trigger)
+}
+
+func buildRouter(t *testing.T, keys []string, trigger SyncTrigger) http.Handler {
 	t.Helper()
 
 	root := t.TempDir()
@@ -288,6 +302,7 @@ func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
 		Store:      status.NewStore(),
 		Vault:      repoVault,
 		Auth:       auth,
+		Sync:       trigger,
 		CacheDir:   t.TempDir(),
 		GitTimeout: 30 * time.Second,
 	})

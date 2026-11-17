@@ -194,6 +194,15 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 | `GET /v1/repos/{name}/archive?path=&path=` | 快照打包，`path` 可重复，留空为整仓 |
 | `GET /v1/archive?include=仓库:路径&include=…` | 跨仓库或多目标打包 |
 | `GET /v1/repos/{name}/bundle` | 带完整历史的 `git bundle` |
+| `POST /v1/repos/{name}/sync` | 立刻同步指定仓库，同步返回结果 |
+| `POST /v1/sync` | 触发一轮全量同步，立即返回 `202` |
+
+按需同步用于「刚改完文档，不想等 6 小时」。这里的“只读”是针对仓库内容的：客户端永远不能写入、修改或删除仓库里的文件；触发同步是服务器自身的运维动作，只是把远端内容拉到本地，不改变任何远端仓库。已有同步在跑时返回 `409 sync_busy`，不排队。
+
+```sh
+eucli-dw sync <仓库>      # 立刻同步这一个
+eucli-dw sync --all       # 立刻跑一轮全量
+```
 
 打包默认输出 zip，加 `format=tar.gz` 可换格式；归档不包含 `.git`，总量上限 512 MiB、条目上限两万。bundle 按提交号缓存在 `dataRoot/cache` 下，同一提交只生成一次。
 
@@ -243,6 +252,7 @@ eucli-dw repo unblock [--service-config 路径] <仓库>
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
 eucli-dw search [参数] <仓库> <关键词>
+eucli-dw sync <仓库> | sync --all
 eucli-dw pull <仓库>[:路径] ... [-o 文件]
 eucli-dw bundle <仓库> [-o 文件]
 

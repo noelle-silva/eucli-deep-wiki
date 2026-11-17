@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,5 +139,34 @@ func TestSyncOneBlocksWhenSizeLimitExceeded(t *testing.T) {
 	}
 	if !guard.Get("example").Blocked {
 		t.Fatal("仓库未标记为停止同步")
+	}
+}
+
+func TestSyncOneRejectsUnknownRepository(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "skipped"}}
+	target, _ := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	if _, err := target.SyncOne(context.Background(), "nope"); !errors.Is(err, ErrRepoNotManaged) {
+		t.Fatalf("SyncOne() error = %v, want ErrRepoNotManaged", err)
+	}
+}
+
+func TestSyncOneReturnsResult(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "updated", Branch: "main"}}
+	target, _ := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	result, err := target.SyncOne(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("SyncOne() error = %v", err)
+	}
+	if result.Action != "updated" || result.Name != "example" {
+		t.Fatalf("result = %#v", result)
+	}
+	if git.syncCalls != 1 {
+		t.Fatalf("syncCalls = %d, want 1", git.syncCalls)
 	}
 }

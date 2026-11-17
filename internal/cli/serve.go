@@ -97,6 +97,7 @@ func runServe(args []string, stderr io.Writer) int {
 			Store:      store,
 			Vault:      repoVault,
 			Auth:       auth,
+			Sync:       syncer,
 			CacheDir:   filepath.Join(cfg.DataRoot, "cache"),
 			GitTimeout: cfg.GitCommandTimeoutDuration,
 		}),
