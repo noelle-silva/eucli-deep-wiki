@@ -1,0 +1,15 @@
+# 本机服务配置：只有样例参与版本管理
+configs/*
+!configs/config.json.example
+
+# 运行数据：参考仓库、生成物与仓库索引
+data/
+
+# 开发管理记录拥有独立 Git 记录
+.dev-management/
+.gitnexus/
+
+*.exe
+*.test
+dist/
+tmp/

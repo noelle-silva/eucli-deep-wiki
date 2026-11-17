@@ -1,0 +1,9 @@
+{
+  "dataRoot": "data",
+  "repositoryRoot": "repository",
+  "repositoryIndex": "repositories.json",
+  "syncInterval": "6h",
+  "gitCommandTimeout": "20m",
+  "maxParallelSyncs": 2,
+  "httpAddress": "127.0.0.1:9997"
+}

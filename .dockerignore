@@ -1,0 +1,9 @@
+.git/
+.gitnexus/
+.dev-management/
+configs/config.json
+data/
+dist/
+tmp/
+*.exe
+*.test
