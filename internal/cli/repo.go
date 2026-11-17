@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"eucli-deep-wiki/internal/config"
+	"eucli-deep-wiki/internal/gitops"
 	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/state"
 )
@@ -27,6 +29,8 @@ func runRepo(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRepoList(args[1:], stdout, stderr)
 	case "unblock":
 		return runRepoUnblock(args[1:], stdout, stderr)
+	case "compact":
+		return runRepoCompact(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "未知 repo 子命令: %s\n", args[0])
 		return 2
@@ -166,6 +170,60 @@ func runRepoUnblock(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "已解除 %s 的同步限制，下一轮同步会重新尝试\n", name)
+	return 0
+}
+
+// runRepoCompact 把仓库就地转为浅克隆，避免重新下载工作树。
+func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("repo compact", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+
+	if err := parseArgs(flags, args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.Load(*serviceConfig)
+	if err != nil {
+		fmt.Fprintf(stderr, "读取服务配置失败: %v\n", err)
+		return 1
+	}
+	index, err := repoindex.Load(cfg.RepositoryIndexPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "读取仓库索引失败: %v\n", err)
+		return 1
+	}
+
+	wanted := map[string]struct{}{}
+	for _, name := range flags.Args() {
+		wanted[name] = struct{}{}
+	}
+
+	client := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
+	compacted := 0
+
+	for _, repository := range index.Repositories {
+		if len(wanted) > 0 {
+			if _, ok := wanted[repository.Name]; !ok {
+				continue
+			}
+		}
+
+		if repository.EffectiveHistory(cfg.DefaultHistory) != repoindex.HistoryShallow {
+			fmt.Fprintf(stdout, "%s\t跳过（索引要求完整历史）\n", repository.Name)
+			continue
+		}
+
+		path := filepath.Join(cfg.RepositoryDir(), repository.Name)
+		if err := client.Compact(context.Background(), path); err != nil {
+			fmt.Fprintf(stderr, "%s\t失败: %v\n", repository.Name, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "%s\t已就地转为浅克隆\n", repository.Name)
+		compacted++
+	}
+
+	fmt.Fprintf(stdout, "完成，共处理 %d 个仓库\n", compacted)
 	return 0
 }
 

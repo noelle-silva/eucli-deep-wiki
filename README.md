@@ -52,7 +52,14 @@
 | `gcGrowthMB` | 距上次压缩增长多少 MB 才真的压 | `300` |
 | `sizeLimitMB` | `.git` 超过多少 MB 停止同步 | `5120` |
 
-历史档位：`shallow` 只保留最新一个提交（默认，`.git` 很小），`full` 保留完整历史。单个仓库可以在索引里用 `"history"` 字段覆盖全局默认。
+历史档位只有两档：`shallow` 只保留最新一个提交（默认，`.git` 很小），`full` 保留完整历史。单个仓库可以在索引里用 `"history"` 字段覆盖全局默认。不提供“无 Git”档——没有 `.git` 就无法增量拉取、也无法精确对齐到某个提交，代价高于收益。
+
+切档不需要重新下载工作树：从 `full` 转 `shallow` 时就地瘦身——收窄 fetch 范围、删掉无关的远端分支与标签、清理不可达对象，工作树保持不变；只有就地转换失败才退回重建。也可以手动触发：
+
+```sh
+eucli-dw repo compact            # 全部
+eucli-dw repo compact <仓库>      # 单个
+```
 
 体积保护：同步完成后检查 `.git` 体积。达到 `gcThresholdMB` 且比上次压缩后增长超过 `gcGrowthMB` 时跑一次 `git gc` 并记录新基准；超过 `sizeLimitMB` 则停止该仓库的自动同步，标记为 `BLOCKED`，人工处理后再 `repo unblock` 恢复。
 

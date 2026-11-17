@@ -381,3 +381,40 @@ func assertMissing(t *testing.T, path string) {
 		t.Fatalf("expected %s to be missing, got error %v", path, err)
 	}
 }
+
+func TestSyncCompactsFullRepositoryInPlace(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	client := New(root, 60*time.Second)
+	remote := createRepository(t, "fresh.txt", "fresh")
+	commitFile(t, remote, "second.txt", "second")
+	remoteURL := fileURL(t, remote)
+
+	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if first.Error != "" {
+		t.Fatalf("first Sync() error = %q", first.Error)
+	}
+
+	target := filepath.Join(root, "example")
+	if shallow, err := client.isShallowRepository(context.Background(), target); err != nil || shallow {
+		t.Fatalf("初始应为完整仓库: shallow=%v err=%v", shallow, err)
+	}
+
+	second := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL, Shallow: true})
+	if second.Error != "" {
+		t.Fatalf("second Sync() error = %q", second.Error)
+	}
+	if second.Action != "compacted" {
+		t.Fatalf("second Sync() action = %q, want compacted", second.Action)
+	}
+
+	shallow, err := client.isShallowRepository(context.Background(), target)
+	if err != nil {
+		t.Fatalf("isShallowRepository() error = %v", err)
+	}
+	if !shallow {
+		t.Fatal("仓库未变成浅克隆")
+	}
+	assertFileContent(t, filepath.Join(target, "fresh.txt"), "fresh")
+}

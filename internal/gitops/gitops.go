@@ -29,6 +29,7 @@ const (
 	targetMissing targetState = iota
 	targetReady
 	targetRebuild
+	targetDepthMismatch
 )
 
 type Repository struct {
@@ -115,9 +116,152 @@ func (c *Client) sync(ctx context.Context, repo Repository, path string) (string
 			return "", "recreate failed", err
 		}
 		return c.cloneAndEnforce(ctx, repo, path, "recreated", "recreate failed")
+	case targetDepthMismatch:
+		branch, action, err := c.convertDepth(ctx, repo, path)
+		if err != nil {
+			// 就地转换失败时退回重建，保证仓库最终可用。
+			if removeErr := c.removeControlledTarget(path); removeErr != nil {
+				return "", "recreate failed", removeErr
+			}
+			rebuiltBranch, rebuiltAction, rebuildErr := c.cloneAndEnforce(ctx, repo, path, "recreated", "recreate failed")
+			if rebuildErr != nil {
+				return rebuiltBranch, rebuiltAction, rebuildErr
+			}
+			return rebuiltBranch, rebuiltAction, nil
+		}
+		return branch, action, nil
 	}
 
 	return c.syncReadyTarget(ctx, repo, path)
+}
+
+// convertDepth 在不重新下载工作树的前提下切换历史深度。
+func (c *Client) convertDepth(ctx context.Context, repo Repository, path string) (string, string, error) {
+	if repo.Shallow {
+		branch, err := c.shrinkToShallow(ctx, path)
+		if err != nil {
+			return branch, "compact failed", err
+		}
+		return branch, "compacted", nil
+	}
+
+	branch, err := c.expandToFull(ctx, path)
+	if err != nil {
+		return branch, "expand failed", err
+	}
+	return branch, "expanded", nil
+}
+
+// Compact 把已存在的完整仓库就地转为浅克隆。
+func (c *Client) Compact(ctx context.Context, path string) error {
+	_, err := c.shrinkToShallow(ctx, path)
+	return err
+}
+
+// shrinkToShallow 把完整仓库就地变浅。
+//
+// 只切深度还不够：克隆时带下来的成百上千个远端分支与标签仍然引用旧历史，
+// gc 清不掉。因此这里同时收窄 refspec、删除无关引用，再清理对象。
+func (c *Client) shrinkToShallow(ctx context.Context, path string) (string, error) {
+	branch, err := c.currentBranch(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		return "", errors.New("cannot compact a detached HEAD")
+	}
+
+	if err := c.restrictFetchRefspec(ctx, path, branch); err != nil {
+		return branch, err
+	}
+	if _, err := c.runNetwork(ctx, path, "fetch", "--depth", "1", "--update-shallow", "origin", branch); err != nil {
+		return branch, err
+	}
+	if err := c.pruneReferences(ctx, path, branch); err != nil {
+		return branch, err
+	}
+	if _, err := c.run(ctx, path, "reflog", "expire", "--expire=now", "--all"); err != nil {
+		return branch, err
+	}
+	if err := c.GarbageCollect(ctx, path); err != nil {
+		return branch, err
+	}
+	return branch, nil
+}
+
+// restrictFetchRefspec 让后续 fetch 只跟一个分支，避免再把所有分支拉回来。
+func (c *Client) restrictFetchRefspec(ctx context.Context, path string, branch string) error {
+	if _, err := c.run(ctx, path, "config", "--unset-all", "remote.origin.fetch"); err != nil {
+		if isCommandControlError(err) || !isGitExitError(err) {
+			return err
+		}
+	}
+
+	spec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
+	if _, err := c.run(ctx, path, "config", "--add", "remote.origin.fetch", spec); err != nil {
+		return err
+	}
+	return nil
+}
+
+// pruneReferences 删除目标分支以外的远端引用与全部标签。
+func (c *Client) pruneReferences(ctx context.Context, path string, branch string) error {
+	keep := fmt.Sprintf("refs/remotes/origin/%s", branch)
+
+	out, err := c.run(ctx, path, "for-each-ref", "--format=%(refname)", "refs/remotes", "refs/tags")
+	if err != nil {
+		return err
+	}
+
+	var deletions []string
+	for _, ref := range strings.Split(out, "\n") {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || ref == keep || ref == "refs/remotes/origin/HEAD" {
+			continue
+		}
+		deletions = append(deletions, "delete "+ref)
+	}
+	if len(deletions) == 0 {
+		return nil
+	}
+
+	input := strings.Join(deletions, "\n") + "\n"
+	_, err = c.runInput(ctx, path, input, "update-ref", "--stdin")
+	return err
+}
+
+// runInput 运行需要从标准输入喂数据的 git 命令。
+func (c *Client) runInput(ctx context.Context, dir string, input string, args ...string) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, "git", gitArgs(args)...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		return text, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, text)
+	}
+	return text, nil
+}
+
+// expandToFull 把浅克隆补成完整历史，工作树保持不变。
+func (c *Client) expandToFull(ctx context.Context, path string) (string, error) {
+	branch, err := c.currentBranch(ctx, path)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := c.runNetwork(ctx, path, "fetch", "--unshallow", "origin"); err != nil {
+		return branch, err
+	}
+	if err := c.enforceResolvedRemoteState(ctx, path, branch); err != nil {
+		return branch, err
+	}
+	return branch, nil
 }
 
 func (c *Client) syncReadyTarget(ctx context.Context, repo Repository, path string) (string, string, error) {
@@ -186,7 +330,7 @@ func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL str
 		return targetMissing, err
 	}
 	if isShallow != shallow {
-		return targetRebuild, nil
+		return targetDepthMismatch, nil
 	}
 
 	matches, err := c.originMatches(ctx, path, expectedURL)
