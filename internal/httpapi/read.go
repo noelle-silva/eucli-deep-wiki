@@ -109,6 +109,22 @@ func parseLimit(raw string) int {
 	return value
 }
 
+func findFiles(repoVault *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		values := r.URL.Query()
+		result, err := repoVault.Find(r.PathValue("name"), vault.FindOptions{
+			Pattern: values.Get("name"),
+			Path:    values.Get("path"),
+			Limit:   parseLimit(values.Get("limit")),
+		})
+		if err != nil {
+			writeVaultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func writeVaultError(w http.ResponseWriter, err error) {
 	statusCode, code, message := classify(err)
 	writeJSON(w, statusCode, apiError{Code: code, Message: message})
@@ -130,6 +146,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusUnsupportedMediaType, "not_text", "文件不是可读文本"
 	case errors.Is(err, vault.ErrInvalidQuery):
 		return http.StatusBadRequest, "query_required", "q 参数必须提供"
+	case errors.Is(err, vault.ErrInvalidName):
+		return http.StatusBadRequest, "name_required", "name 参数必须提供"
 	default:
 		return http.StatusInternalServerError, "internal_error", err.Error()
 	}

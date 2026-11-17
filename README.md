@@ -253,6 +253,7 @@ eucli-dw repo unblock [--service-config 路径] <仓库>
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
 eucli-dw search [参数] <仓库> <关键词>   --path 限定目录，--offset 翻页
+eucli-dw find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配
 eucli-dw repos [--json]             列出服务器上的仓库与提交号
 eucli-dw status [--json]            查看同步状态
 eucli-dw sync <仓库> | sync --all

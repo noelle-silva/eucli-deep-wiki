@@ -28,6 +28,8 @@ var (
 	ErrBinary = errors.New("file is not text")
 	// ErrInvalidQuery 表示检索词为空。
 	ErrInvalidQuery = errors.New("query is required")
+	// ErrInvalidName 表示文件名模式为空。
+	ErrInvalidName = errors.New("name is required")
 )
 
 // Limits 控制单次请求的资源上限，避免一次请求扫穿整个仓库。

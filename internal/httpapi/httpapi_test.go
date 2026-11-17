@@ -381,3 +381,32 @@ func TestStateEndpointReportsBlockedRepository(t *testing.T) {
 		t.Fatalf("body = %s", recorder.Body.String())
 	}
 }
+
+func TestFindEndpointReturnsMatches(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/find?name=*.md"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "docs/guide.md") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestFindEndpointRequiresPattern(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/find"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}

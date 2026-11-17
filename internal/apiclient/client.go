@@ -37,6 +37,43 @@ type SearchOptions struct {
 	Offset int
 }
 
+// FoundEntry 是按文件名命中的文件。
+type FoundEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
+}
+
+// FindResult 是文件名检索结果。
+type FindResult struct {
+	Repo      string       `json:"repo"`
+	Pattern   string       `json:"pattern"`
+	Path      string       `json:"path,omitempty"`
+	Entries   []FoundEntry `json:"entries"`
+	Scanned   int          `json:"scannedFiles"`
+	Truncated bool         `json:"truncated"`
+}
+
+// Find 按文件名检索，支持通配符与子串。
+func (c *Client) Find(ctx context.Context, name string, pattern string, target string, limit int) (FindResult, error) {
+	values := url.Values{}
+	values.Set("name", pattern)
+	if target != "" {
+		values.Set("path", target)
+	}
+	if limit > 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+
+	var result FindResult
+	endpoint := "/v1/repos/" + url.PathEscape(name) + "/find"
+	if err := c.getJSON(ctx, endpoint, values, &result); err != nil {
+		return FindResult{}, err
+	}
+	return result, nil
+}
+
 // RepoMeta 是一个仓库的元数据。
 type RepoMeta struct {
 	Name     string `json:"name"`

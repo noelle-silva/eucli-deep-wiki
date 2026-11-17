@@ -40,6 +40,7 @@ func NewRouter(options Options) http.Handler {
 	mux.Handle("GET /v1/repos/{name}/tree", options.Auth.Wrap(showTree(options.Vault)))
 	mux.Handle("GET /v1/repos/{name}/file", options.Auth.Wrap(showFile(options.Vault)))
 	mux.Handle("GET /v1/repos/{name}/search", options.Auth.Wrap(searchRepository(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/find", options.Auth.Wrap(findFiles(options.Vault)))
 	mux.Handle("GET /v1/repos/{name}/archive", options.Auth.Wrap(showArchive(options.Vault)))
 	mux.Handle("GET /v1/repos/{name}/bundle", options.Auth.Wrap(
 		showBundle(options.Vault, options.CacheDir, options.GitTimeout, shared),

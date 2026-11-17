@@ -29,7 +29,8 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   status [参数]                   查看同步状态
   get [参数] <仓库> <路径>        读取文件内容
   tree [参数] <仓库> [目录]       列出目录
-  search [参数] <仓库> <关键词>   在仓库内检索
+  search [参数] <仓库> <关键词>   按内容检索（逐文件扫描）
+  find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配
   sync <仓库> | sync --all        立刻同步，不等定时轮
   pull <仓库>[:路径] ... [-o 文件]  下载快照包（zip / tar.gz）
   bundle <仓库> [-o 文件]         下载带历史的 bundle
@@ -56,6 +57,7 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   eucli-dw config set key 0123456789abcdef
   eucli-dw get claw-code README.md
   eucli-dw search claw-code subagent --json
+  eucli-dw find claw-code "*.md" --path docs
 `
 
 // Run 执行一次命令行调用，返回进程退出码。
@@ -82,6 +84,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runTree(rest, stdout, stderr)
 	case "search":
 		return runSearch(rest, stdout, stderr)
+	case "find":
+		return runFind(rest, stdout, stderr)
 	case "pull":
 		return runPull(rest, stdout, stderr)
 	case "bundle":

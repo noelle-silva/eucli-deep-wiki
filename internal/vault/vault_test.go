@@ -253,3 +253,60 @@ func TestSearchSupportsPathAndOffset(t *testing.T) {
 		t.Fatal("最后一页不应标记截断")
 	}
 }
+
+func TestFindMatchesGlobAndSubstring(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "example/docs/guide.md", "x")
+	writeRepoFile(t, root, "example/docs/deep/notes.md", "x")
+	writeRepoFile(t, root, "example/src/main.go", "x")
+	writeRepoFile(t, root, "example/.git/config", "x")
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	globbed, err := v.Find("example", FindOptions{Pattern: "*.md"})
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if len(globbed.Entries) != 2 {
+		t.Fatalf("glob entries = %#v", globbed.Entries)
+	}
+	for _, entry := range globbed.Entries {
+		if !strings.HasSuffix(entry.Path, ".md") {
+			t.Fatalf("命中了非目标文件: %#v", entry)
+		}
+	}
+
+	substring, err := v.Find("example", FindOptions{Pattern: "MAIN"})
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if len(substring.Entries) != 1 || substring.Entries[0].Name != "main.go" {
+		t.Fatalf("substring entries = %#v", substring.Entries)
+	}
+
+	scoped, err := v.Find("example", FindOptions{Pattern: "*.md", Path: "docs/deep"})
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if len(scoped.Entries) != 1 || scoped.Entries[0].Path != "docs/deep/notes.md" {
+		t.Fatalf("scoped entries = %#v", scoped.Entries)
+	}
+}
+
+func TestFindRejectsEmptyPattern(t *testing.T) {
+	t.Parallel()
+
+	v, err := New(t.TempDir(), []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := v.Find("example", FindOptions{Pattern: "  "}); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("Find() error = %v, want ErrInvalidName", err)
+	}
+}
