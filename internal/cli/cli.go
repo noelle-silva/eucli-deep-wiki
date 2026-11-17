@@ -39,6 +39,7 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   config set key <key>            设置 key
   config show [--json]            查看当前配置（key 打码）
   config path                     打印配置文件位置
+  cache list | cache clean        查看或清空 bundle 缓存
 
 其它:
   version                         打印构建信息
@@ -95,6 +96,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runVersion(rest, stdout, stderr)
 	case "config":
 		return runConfig(rest, stdout, stderr)
+	case "cache":
+		return runCache(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "未知命令: %s\n\n", command)
 		fmt.Fprint(stderr, usageText)

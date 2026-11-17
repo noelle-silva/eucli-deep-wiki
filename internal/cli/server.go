@@ -8,6 +8,8 @@ import (
 	"io"
 	"runtime/debug"
 	"sort"
+
+	"eucli-deep-wiki/internal/apiclient"
 	"strings"
 )
 
@@ -32,11 +34,19 @@ func runRepos(args []string, stdout io.Writer, stderr io.Writer) int {
 	repositories, err := client.Repositories(context.Background())
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
-		return 1
+		return exitCodeFor(err)
+	}
+
+	states, stateErr := client.State(context.Background())
+	if stateErr != nil {
+		states = map[string]apiclient.RepoState{}
 	}
 
 	if options.asJSON {
-		return writeJSON(stdout, stderr, map[string]any{"repositories": repositories})
+		return writeJSON(stdout, stderr, map[string]any{
+			"repositories": repositories,
+			"states":       states,
+		})
 	}
 
 	for _, repository := range repositories {
@@ -51,7 +61,12 @@ func runRepos(args []string, stdout io.Writer, stderr io.Writer) int {
 		if revision == "" {
 			revision = "-"
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\n", repository.Name, branch, revision)
+
+		marker := ""
+		if state, ok := states[repository.Name]; ok && state.Blocked {
+			marker = fmt.Sprintf("\tBLOCKED(%d MB)", state.BlockedSize>>20)
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s%s\n", repository.Name, branch, revision, marker)
 	}
 	return 0
 }
@@ -77,7 +92,7 @@ func runStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	raw, err := client.Status(context.Background())
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
-		return 1
+		return exitCodeFor(err)
 	}
 
 	if options.asJSON {
@@ -89,7 +104,15 @@ func runStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	return renderStatus(stdout, stderr, raw)
+	code := renderStatus(stdout, stderr, raw)
+	if code != 0 {
+		return code
+	}
+
+	if states, err := client.State(context.Background()); err == nil {
+		printBlocked(stdout, states)
+	}
+	return 0
 }
 
 func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
@@ -149,6 +172,25 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 		}
 	}
 	return 0
+}
+
+// printBlocked 列出因体积保护停止同步的仓库。
+func printBlocked(stdout io.Writer, states map[string]apiclient.RepoState) {
+	names := make([]string, 0, len(states))
+	for name, state := range states {
+		if state.Blocked {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	sort.Strings(names)
+
+	fmt.Fprintf(stdout, "停止同步: %d 个仓库\n", len(names))
+	for _, name := range names {
+		fmt.Fprintf(stdout, "  %s (%d MB)\n", name, states[name].BlockedSize>>20)
+	}
 }
 
 func formatCounts(counts map[string]int) string {

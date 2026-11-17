@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -103,6 +105,7 @@ func runRepoList(args []string, stdout io.Writer, stderr io.Writer) int {
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 	asJSON := flags.Bool("json", false, "输出原始 JSON")
+	sizes := flags.Bool("sizes", false, "附带 .git 体积（需要遍历磁盘，较慢）")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -136,17 +139,64 @@ func runRepoList(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	for _, repository := range index.Repositories {
+		stateOfRepo := guard.Get(repository.Name)
+
 		marker := ""
-		if guard.Get(repository.Name).Blocked {
-			marker = "\tBLOCKED"
+		if stateOfRepo.Blocked {
+			marker = fmt.Sprintf("\tBLOCKED(%d MB)", stateOfRepo.BlockedSize>>20)
 		}
-		if repository.Branch != "" {
-			fmt.Fprintf(stdout, "%s\t%s\t%s%s\n", repository.Name, repository.Branch, repository.URL, marker)
-			continue
+
+		branch := repository.Branch
+		if branch == "" {
+			branch = readHeadBranch(filepath.Join(cfg.RepositoryDir(), repository.Name))
 		}
-		fmt.Fprintf(stdout, "%s\t%s%s\n", repository.Name, repository.URL, marker)
+		if branch == "" {
+			branch = "-"
+		}
+
+		sizeText := ""
+		if *sizes {
+			size, err := directorySize(filepath.Join(cfg.RepositoryDir(), repository.Name, ".git"))
+			if err == nil {
+				sizeText = fmt.Sprintf("\t%d MB", size>>20)
+			} else {
+				sizeText = "\t-"
+			}
+		}
+
+		fmt.Fprintf(stdout, "%s\t%s\t%s%s%s\n", repository.Name, branch, repository.URL, sizeText, marker)
 	}
 	return 0
+}
+
+// readHeadBranch 直接从 .git/HEAD 读取分支名，索引未声明时用它兜底。
+func readHeadBranch(repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(repoPath, ".git", "HEAD"))
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, "ref: refs/heads/") {
+		return ""
+	}
+	return strings.TrimPrefix(line, "ref: refs/heads/")
+}
+
+// directorySize 统计目录占用的字节数。
+func directorySize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // runRepoUnblock 解除某个仓库的体积保护。
@@ -195,8 +245,9 @@ func runRepoUnblock(args []string, stdout io.Writer, stderr io.Writer) int {
 func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo compact", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
+	setupHelp(flags, "eucli-dw repo compact [--dry-run] [仓库]...")
 	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
+	dryRun := flags.Bool("dry-run", false, "只列出将要处理的仓库，不实际转换")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -234,6 +285,11 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 
 		path := filepath.Join(cfg.RepositoryDir(), repository.Name)
+		if *dryRun {
+			fmt.Fprintf(stdout, "%s\t将会就地转为浅克隆\n", repository.Name)
+			compacted++
+			continue
+		}
 		if err := client.Compact(context.Background(), path); err != nil {
 			fmt.Fprintf(stderr, "%s\t失败: %v\n", repository.Name, err)
 			return 1
@@ -242,6 +298,10 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 		compacted++
 	}
 
+	if *dryRun {
+		fmt.Fprintf(stdout, "预演完成，共 %d 个仓库待转换（未执行）\n", compacted)
+		return 0
+	}
 	fmt.Fprintf(stdout, "完成，共处理 %d 个仓库\n", compacted)
 	return 0
 }

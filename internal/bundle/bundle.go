@@ -12,14 +12,14 @@ import (
 )
 
 // Create 在仓库目录里生成 bundle 文件。
-// 先写到临时文件再改名，避免下载方拿到半截内容。
+// 先写到临时文件再改名，避免下载方拿到半截内容；上次中断留下的临时文件会先清掉。
 func Create(ctx context.Context, repoPath string, outputPath string, timeout time.Duration) error {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
 
 	temporary := outputPath + ".tmp"
-	_ = os.Remove(temporary)
+	cleanup(temporary)
 
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -28,9 +28,19 @@ func Create(ctx context.Context, repoPath string, outputPath string, timeout tim
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		_ = os.Remove(temporary)
+		cleanup(temporary)
 		return fmt.Errorf("git bundle: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	return os.Rename(temporary, outputPath)
+	if err := os.Rename(temporary, outputPath); err != nil {
+		cleanup(temporary)
+		return err
+	}
+	return nil
+}
+
+// cleanup 移除临时文件与 git 可能留下的锁文件。
+func cleanup(temporary string) {
+	_ = os.Remove(temporary)
+	_ = os.Remove(temporary + ".lock")
 }

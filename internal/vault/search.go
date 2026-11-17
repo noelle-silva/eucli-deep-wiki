@@ -13,22 +13,43 @@ type Match struct {
 	Text string `json:"text"`
 }
 
+// SearchOptions 描述一次检索的边界。
+type SearchOptions struct {
+	Query  string
+	Path   string
+	Offset int
+	Limit  int
+}
+
 // SearchResult 是一次检索的结果。
 type SearchResult struct {
 	Repo      string  `json:"repo"`
 	Query     string  `json:"query"`
+	Path      string  `json:"path,omitempty"`
+	Offset    int     `json:"offset"`
 	Matches   []Match `json:"matches"`
 	Scanned   int     `json:"scannedFiles"`
 	Truncated bool    `json:"truncated"`
 }
 
-// Search 在仓库内按行做子串匹配，遇到目录边界与体积上限即停。
-func (v *Vault) Search(name string, query string, limit int) (SearchResult, error) {
-	if strings.TrimSpace(query) == "" {
+// Search 在指定目录内按行做子串匹配；支持偏移量，便于翻页。
+func (v *Vault) Search(name string, options SearchOptions) (SearchResult, error) {
+	if strings.TrimSpace(options.Query) == "" {
 		return SearchResult{}, ErrInvalidQuery
 	}
+
+	rel, err := cleanPath(options.Path)
+	if err != nil {
+		return SearchResult{}, err
+	}
+
+	limit := options.Limit
 	if limit <= 0 || limit > v.limits.MaxSearchResults {
 		limit = v.limits.MaxSearchResults
+	}
+	offset := options.Offset
+	if offset < 0 {
+		offset = 0
 	}
 
 	root, err := v.open(name)
@@ -37,14 +58,22 @@ func (v *Vault) Search(name string, query string, limit int) (SearchResult, erro
 	}
 	defer root.Close()
 
+	if _, err := root.Stat(rel); err != nil {
+		return SearchResult{}, describe(err)
+	}
+
 	result := SearchResult{
 		Repo:    name,
-		Query:   query,
+		Query:   options.Query,
+		Path:    options.Path,
+		Offset:  offset,
 		Matches: []Match{},
 	}
+	// 多取一条用来判断后面还有没有。
+	wanted := offset + limit + 1
 	fsys := root.FS()
 
-	walkErr := fs.WalkDir(fsys, ".", func(current string, entry fs.DirEntry, walkErr error) error {
+	walkErr := fs.WalkDir(fsys, rel, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -72,7 +101,7 @@ func (v *Vault) Search(name string, query string, limit int) (SearchResult, erro
 
 		result.Scanned++
 		for index, line := range strings.Split(string(data), "\n") {
-			if !strings.Contains(line, query) {
+			if !strings.Contains(line, options.Query) {
 				continue
 			}
 			result.Matches = append(result.Matches, Match{
@@ -80,7 +109,7 @@ func (v *Vault) Search(name string, query string, limit int) (SearchResult, erro
 				Line: index + 1,
 				Text: trimText(line),
 			})
-			if len(result.Matches) >= limit {
+			if len(result.Matches) >= wanted {
 				result.Truncated = true
 				return fs.SkipAll
 			}
@@ -90,6 +119,16 @@ func (v *Vault) Search(name string, query string, limit int) (SearchResult, erro
 
 	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
 		return SearchResult{}, walkErr
+	}
+
+	if offset >= len(result.Matches) {
+		result.Matches = []Match{}
+		return result, nil
+	}
+	result.Matches = result.Matches[offset:]
+	if len(result.Matches) > limit {
+		result.Matches = result.Matches[:limit]
+		result.Truncated = true
 	}
 	return result, nil
 }

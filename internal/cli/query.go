@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"eucli-deep-wiki/internal/apiclient"
 )
 
 // runGet 读取一个文件。
@@ -36,7 +38,7 @@ func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 	file, err := client.File(context.Background(), repo, target)
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
-		return 1
+		return exitCodeFor(err)
 	}
 
 	if options.asJSON {
@@ -83,7 +85,7 @@ func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 	tree, err := client.Tree(context.Background(), repo, target)
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
-		return 1
+		return exitCodeFor(err)
 	}
 
 	if options.asJSON {
@@ -111,6 +113,8 @@ func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	options := &clientFlags{}
 	options.register(flags, true)
 	limit := flags.Int("limit", 0, "最多返回多少条命中")
+	offset := flags.Int("offset", 0, "跳过前多少条命中，用于翻页")
+	searchPath := flags.String("path", "", "只在指定目录内检索")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -129,10 +133,15 @@ func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	repo := flags.Arg(0)
 	query := strings.Join(flags.Args()[1:], " ")
 
-	result, err := client.Search(context.Background(), repo, query, *limit)
+	result, err := client.Search(context.Background(), repo, apiclient.SearchOptions{
+		Query:  query,
+		Path:   *searchPath,
+		Limit:  *limit,
+		Offset: *offset,
+	})
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
-		return 1
+		return exitCodeFor(err)
 	}
 
 	if options.asJSON {
@@ -140,14 +149,14 @@ func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if len(result.Matches) == 0 {
-		fmt.Fprintln(stdout, "没有命中")
+		fmt.Fprintf(stdout, "没有命中（已扫描 %d 个文件，偏移 %d）\n", result.Scanned, result.Offset)
 		return 0
 	}
 	for _, match := range result.Matches {
 		fmt.Fprintf(stdout, "%s:%d: %s\n", match.Path, match.Line, match.Text)
 	}
 	if result.Truncated {
-		fmt.Fprintln(stdout, "（结果已截断）")
+		fmt.Fprintf(stdout, "（还有更多命中，可用 --offset %d 继续；已扫描 %d 个文件）\n", result.Offset+len(result.Matches), result.Scanned)
 	}
 	return 0
 }

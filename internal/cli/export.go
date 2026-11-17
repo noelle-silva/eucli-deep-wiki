@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // runPull 下载快照包。
@@ -18,6 +19,7 @@ func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 	options.register(flags, true)
 	output := flags.String("o", "", "输出文件路径")
 	format := flags.String("format", "zip", "打包格式：zip 或 tar.gz")
+	progress := flags.Bool("progress", false, "下载过程中在 stderr 输出进度")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -40,22 +42,32 @@ func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 	client, err := options.client()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return exitFailure
 	}
 
 	temporary := target + ".part"
 	file, err := os.Create(temporary)
 	if err != nil {
 		fmt.Fprintf(stderr, "创建文件失败: %v\n", err)
-		return 1
+		return exitFailure
 	}
 
-	err = client.Archive(context.Background(), flags.Args(), *format, file)
+	var sink io.Writer = file
+	var reporter *progressWriter
+	if *progress {
+		reporter = &progressWriter{target: file, out: stderr, last: time.Now()}
+		sink = reporter
+	}
+
+	err = client.Archive(context.Background(), flags.Args(), *format, sink)
+	if reporter != nil {
+		reporter.done()
+	}
 	closeErr := file.Close()
 	if err != nil {
 		_ = os.Remove(temporary)
-		fmt.Fprintf(stderr, "下载失败: %v\n", err)
-		return 1
+		reportError(stderr, err, options.asJSON)
+		return exitCodeFor(err)
 	}
 	if closeErr != nil {
 		_ = os.Remove(temporary)
@@ -112,8 +124,8 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 	closeErr := file.Close()
 	if err != nil {
 		_ = os.Remove(temporary)
-		fmt.Fprintf(stderr, "下载失败: %v\n", err)
-		return 1
+		reportError(stderr, err, options.asJSON)
+		return exitCodeFor(err)
 	}
 	if closeErr != nil {
 		_ = os.Remove(temporary)
@@ -129,6 +141,28 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "已保存 %s\n", target)
 	return 0
+}
+
+// progressWriter 每两秒向 stderr 汇报已写入的字节数。
+type progressWriter struct {
+	target io.Writer
+	out    io.Writer
+	total  int64
+	last   time.Time
+}
+
+func (p *progressWriter) Write(data []byte) (int, error) {
+	written, err := p.target.Write(data)
+	p.total += int64(written)
+	if time.Since(p.last) >= 2*time.Second {
+		p.last = time.Now()
+		fmt.Fprintf(p.out, "\r已下载 %d MB", p.total>>20)
+	}
+	return written, err
+}
+
+func (p *progressWriter) done() {
+	fmt.Fprintf(p.out, "\r已下载 %d MB\n", p.total>>20)
 }
 
 // reportSaved 回报保存结果，附文件大小，便于确认不是空包。

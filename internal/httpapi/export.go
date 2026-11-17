@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -139,7 +140,9 @@ func showBundle(repoVault *vault.Vault, cacheDir string, timeout time.Duration, 
 
 		shared.mu.Lock()
 		if _, err := os.Stat(cachePath); err != nil {
-			if err := bundle.Create(r.Context(), repoDir, cachePath, timeout); err != nil {
+			// 生成过程不受客户端断开影响，否则会留下半截缓存与锁文件。
+			buildCtx := context.WithoutCancel(r.Context())
+			if err := bundle.Create(buildCtx, repoDir, cachePath, timeout); err != nil {
 				shared.mu.Unlock()
 				writeJSON(w, http.StatusInternalServerError, apiError{
 					Code:    "bundle_failed",

@@ -191,6 +191,7 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 | `GET /v1/repos/{name}/tree?path=` | 目录树，目录优先，隐藏 `.git` |
 | `GET /v1/repos/{name}/file?path=` | 读取文本文件 |
 | `GET /v1/repos/{name}/search?q=&limit=` | 按行子串检索 |
+| `GET /v1/repos/{name}/search?q=&path=&offset=` | 限定目录并翻页 |
 | `GET /v1/repos/{name}/archive?path=&path=` | 快照打包，`path` 可重复，留空为整仓 |
 | `GET /v1/archive?include=仓库:路径&include=…` | 跨仓库或多目标打包 |
 | `GET /v1/repos/{name}/bundle` | 带完整历史的 `git bundle` |
@@ -251,18 +252,34 @@ eucli-dw repo unblock [--service-config 路径] <仓库>
 
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
-eucli-dw search [参数] <仓库> <关键词>
+eucli-dw search [参数] <仓库> <关键词>   --path 限定目录，--offset 翻页
 eucli-dw repos [--json]             列出服务器上的仓库与提交号
 eucli-dw status [--json]            查看同步状态
 eucli-dw sync <仓库> | sync --all
-eucli-dw pull <仓库>[:路径] ... [-o 文件]
-eucli-dw bundle <仓库> [-o 文件]
+eucli-dw pull <仓库>[:路径] ... [-o 文件] [--progress]
+eucli-dw bundle <仓库> [-o 文件] [--progress]
 
 eucli-dw config set server <url>
 eucli-dw config set key <key>
 eucli-dw config show [--json]
 eucli-dw config path
+eucli-dw cache list | cache clean [--yes]
 ```
+
+查询命令通用参数另有 `--timeout 秒数`，用来给大文件下载设置上限。
+
+**退出码**（便于脚本判断该重试还是放弃）：
+
+| 码 | 含义 |
+| --- | --- |
+| 0 | 成功 |
+| 1 | 其它失败 |
+| 2 | 参数或用法错误 |
+| 3 | 仓库或路径不存在 |
+| 4 | 鉴权失败 |
+| 5 | 网络或超时 |
+| 6 | 已有同步任务在运行 |
+| 7 | 被拒绝：文件过大、非文本 |
 
 **本地命令**（`serve`、`repo`）直接操作部署目录，只需 `--service-config`；**查询命令**只走网络，不读本地仓库。
 

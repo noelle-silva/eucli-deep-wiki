@@ -29,6 +29,14 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("HTTP %d %s: %s", e.StatusCode, e.Code, e.Message)
 }
 
+// SearchOptions 描述一次检索的边界。
+type SearchOptions struct {
+	Query  string
+	Path   string
+	Limit  int
+	Offset int
+}
+
 // RepoMeta 是一个仓库的元数据。
 type RepoMeta struct {
 	Name     string `json:"name"`
@@ -65,6 +73,8 @@ type Match struct {
 type SearchResult struct {
 	Repo      string  `json:"repo"`
 	Query     string  `json:"query"`
+	Path      string  `json:"path,omitempty"`
+	Offset    int     `json:"offset"`
 	Matches   []Match `json:"matches"`
 	Scanned   int     `json:"scannedFiles"`
 	Truncated bool    `json:"truncated"`
@@ -106,6 +116,13 @@ func New(baseURL string, apiKey string) (*Client, error) {
 	}, nil
 }
 
+// WithTimeout 返回一份使用指定超时的副本。
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	copied := *c
+	copied.http = &http.Client{Timeout: d}
+	return &copied
+}
+
 // Repositories 列出全部仓库。
 func (c *Client) Repositories(ctx context.Context) ([]RepoMeta, error) {
 	var payload struct {
@@ -142,12 +159,18 @@ func (c *Client) Tree(ctx context.Context, name string, target string) (Tree, er
 	return tree, nil
 }
 
-// Search 在仓库内检索。
-func (c *Client) Search(ctx context.Context, name string, query string, limit int) (SearchResult, error) {
+// Search 在仓库内检索，可限定目录并用 offset 翻页。
+func (c *Client) Search(ctx context.Context, name string, options SearchOptions) (SearchResult, error) {
 	values := url.Values{}
-	values.Set("q", query)
-	if limit > 0 {
-		values.Set("limit", strconv.Itoa(limit))
+	values.Set("q", options.Query)
+	if options.Path != "" {
+		values.Set("path", options.Path)
+	}
+	if options.Limit > 0 {
+		values.Set("limit", strconv.Itoa(options.Limit))
+	}
+	if options.Offset > 0 {
+		values.Set("offset", strconv.Itoa(options.Offset))
 	}
 
 	var result SearchResult
@@ -234,6 +257,26 @@ func (c *Client) stream(ctx context.Context, path string, query url.Values, w io
 
 	_, err = io.Copy(w, response.Body)
 	return err
+}
+
+// State 读取服务端记录的体积保护状态。
+func (c *Client) State(ctx context.Context) (map[string]RepoState, error) {
+	var payload struct {
+		Repositories map[string]RepoState `json:"repositories"`
+	}
+	if err := c.getJSON(ctx, "/v1/state", nil, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Repositories, nil
+}
+
+// RepoState 是服务端记录的单个仓库状态。
+type RepoState struct {
+	LastGCSize  int64  `json:"lastGCSize,omitempty"`
+	LastGCAt    string `json:"lastGCAt,omitempty"`
+	Blocked     bool   `json:"blocked,omitempty"`
+	BlockedAt   string `json:"blockedAt,omitempty"`
+	BlockedSize int64  `json:"blockedSize,omitempty"`
 }
 
 // Status 读取服务端同步状态快照，原样返回 JSON。

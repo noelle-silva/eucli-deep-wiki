@@ -123,7 +123,7 @@ func TestSearchPassesQueryAndLimit(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	result, err := client.Search(context.Background(), "example", "needle", 5)
+	result, err := client.Search(context.Background(), "example", SearchOptions{Query: "needle", Limit: 5})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}

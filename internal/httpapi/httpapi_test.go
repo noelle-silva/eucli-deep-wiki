@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
 	"eucli-deep-wiki/internal/vault"
 )
@@ -280,6 +282,28 @@ func newTestRouterWithSync(t *testing.T, trigger SyncTrigger) http.Handler {
 	return buildRouter(t, []string{testAPIKey}, trigger)
 }
 
+func newTestRouterWithStates(t *testing.T) http.Handler {
+	t.Helper()
+
+	root := t.TempDir()
+	repoVault, err := vault.New(root, []string{"example"}, vault.DefaultLimits())
+	if err != nil {
+		t.Fatalf("vault.New() error = %v", err)
+	}
+	auth, err := NewAuthenticator([]string{testAPIKey})
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	return NewRouter(Options{
+		Store:      status.NewStore(),
+		Vault:      repoVault,
+		Auth:       auth,
+		States:     stubStates{},
+		CacheDir:   t.TempDir(),
+		GitTimeout: 30 * time.Second,
+	})
+}
+
 func buildRouter(t *testing.T, keys []string, trigger SyncTrigger) http.Handler {
 	t.Helper()
 
@@ -303,6 +327,7 @@ func buildRouter(t *testing.T, keys []string, trigger SyncTrigger) http.Handler 
 		Vault:      repoVault,
 		Auth:       auth,
 		Sync:       trigger,
+		States:     nil,
 		CacheDir:   t.TempDir(),
 		GitTimeout: 30 * time.Second,
 	})
@@ -330,5 +355,29 @@ func TestArchiveReportsMissingPath(t *testing.T) {
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+}
+
+type stubStates struct{}
+
+func (stubStates) Snapshot() map[string]state.RepoState {
+	return map[string]state.RepoState{
+		"example": {Blocked: true, BlockedSize: 1 << 30},
+	}
+}
+
+func TestStateEndpointReportsBlockedRepository(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouterWithStates(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/state"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "\"blocked\":true") {
+		t.Fatalf("body = %s", recorder.Body.String())
 	}
 }

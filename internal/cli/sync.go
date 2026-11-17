@@ -38,18 +38,18 @@ func runSync(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if *all {
 		if err := client.SyncAll(context.Background()); err != nil {
-			fmt.Fprintf(stderr, "触发同步失败: %v\n", err)
-			return 1
+			reportError(stderr, err, false)
+			return exitCodeFor(err)
 		}
-		fmt.Fprintln(stdout, "已触发一轮全量同步，用 status 查看进度")
+		fmt.Fprintln(stdout, "已触发一轮全量同步，用 `eucli-dw status` 查看进度")
 		return 0
 	}
 
 	repository := flags.Arg(0)
 	result, err := client.SyncRepo(context.Background(), repository)
 	if err != nil {
-		fmt.Fprintf(stderr, "同步失败: %v\n", err)
-		return 1
+		reportError(stderr, err, false)
+		return exitCodeFor(err)
 	}
 
 	fmt.Fprintf(stdout, "%s\t%s\t%s\n", result.Name, result.Action, formatDuration(result.Duration))

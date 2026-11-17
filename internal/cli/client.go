@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"eucli-deep-wiki/internal/apiclient"
 	"eucli-deep-wiki/internal/settings"
@@ -19,6 +20,7 @@ type clientFlags struct {
 	server     string
 	apiKey     string
 	asJSON     bool
+	timeout    int
 }
 
 func (f *clientFlags) register(flags *flag.FlagSet, withJSON bool) {
@@ -28,6 +30,7 @@ func (f *clientFlags) register(flags *flag.FlagSet, withJSON bool) {
 	if withJSON {
 		flags.BoolVar(&f.asJSON, "json", false, "输出原始 JSON")
 	}
+	flags.IntVar(&f.timeout, "timeout", 0, "请求超时秒数，0 表示使用默认值")
 }
 
 // defaultServiceConfig 优先使用可执行文件同级的部署配置，
@@ -89,5 +92,13 @@ func (f *clientFlags) client() (*apiclient.Client, error) {
 	if server == "" || apiKey == "" {
 		return nil, fmt.Errorf("尚未配置连接信息\n请先执行:\n  eucli-dw config set server <url>\n  eucli-dw config set key <key>\n配置文件: %s", path)
 	}
-	return apiclient.New(server, apiKey)
+
+	client, buildErr := apiclient.New(server, apiKey)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	if f.timeout > 0 {
+		client = client.WithTimeout(time.Duration(f.timeout) * time.Second)
+	}
+	return client, nil
 }

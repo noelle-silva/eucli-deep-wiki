@@ -175,7 +175,7 @@ func TestSearchSkipsGitDirectoryAndFindsLines(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	result, err := v.Search("example", "needle", 0)
+	result, err := v.Search("example", SearchOptions{Query: "needle"})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSearchRejectsEmptyQuery(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if _, err := v.Search("example", "  ", 0); !errors.Is(err, ErrInvalidQuery) {
+	if _, err := v.Search("example", SearchOptions{Query: "  "}); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatalf("Search() error = %v, want ErrInvalidQuery", err)
 	}
 }
@@ -214,5 +214,42 @@ func writeRepoBytes(t *testing.T, dir string, name string, content []byte) {
 	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
+	}
+}
+
+func TestSearchSupportsPathAndOffset(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "example/docs/a.md", "needle one\nneedle two\nneedle three\n")
+	writeRepoFile(t, root, "example/src/b.md", "needle outside\n")
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	first, err := v.Search("example", SearchOptions{Query: "needle", Path: "docs", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(first.Matches) != 2 || !first.Truncated {
+		t.Fatalf("first = %#v", first)
+	}
+	for _, match := range first.Matches {
+		if !strings.HasPrefix(match.Path, "docs/") {
+			t.Fatalf("命中了目录外的文件: %#v", match)
+		}
+	}
+
+	second, err := v.Search("example", SearchOptions{Query: "needle", Path: "docs", Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("Search(offset) error = %v", err)
+	}
+	if len(second.Matches) != 1 || second.Matches[0].Line != 3 {
+		t.Fatalf("second = %#v", second)
+	}
+	if second.Truncated {
+		t.Fatal("最后一页不应标记截断")
 	}
 }

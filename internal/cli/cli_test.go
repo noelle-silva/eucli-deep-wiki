@@ -224,10 +224,14 @@ func TestReposListsServerRepositories(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/repos" {
+		switch r.URL.Path {
+		case "/v1/repos":
+			_, _ = w.Write([]byte(`{"repositories":[{"name":"example","branch":"main","revision":"abcdef1234567890"}]}`))
+		case "/v1/state":
+			_, _ = w.Write([]byte(`{"repositories":{}}`))
+		default:
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"repositories":[{"name":"example","branch":"main","revision":"abcdef1234567890"}]}`))
 	}))
 	defer server.Close()
 
@@ -271,8 +275,8 @@ func TestJSONModeEmitsStructuredError(t *testing.T) {
 		"--server", server.URL, "--key", "0123456789abcdef",
 		"--config", filepath.Join(t.TempDir(), "absent.json")}, &bytes.Buffer{}, stderr)
 
-	if code != 1 {
-		t.Fatalf("code = %d, want 1", code)
+	if code != exitNotFound {
+		t.Fatalf("code = %d, want %d", code, exitNotFound)
 	}
 
 	var payload struct {

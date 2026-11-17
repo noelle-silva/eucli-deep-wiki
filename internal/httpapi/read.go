@@ -83,10 +83,13 @@ func showFile(repoVault *vault.Vault) http.HandlerFunc {
 
 func searchRepository(repoVault *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		query := r.URL.Query().Get("q")
-		limit := parseLimit(r.URL.Query().Get("limit"))
-
-		result, err := repoVault.Search(r.PathValue("name"), query, limit)
+		values := r.URL.Query()
+		result, err := repoVault.Search(r.PathValue("name"), vault.SearchOptions{
+			Query:  values.Get("q"),
+			Path:   values.Get("path"),
+			Offset: parseLimit(values.Get("offset")),
+			Limit:  parseLimit(values.Get("limit")),
+		})
 		if err != nil {
 			writeVaultError(w, err)
 			return
