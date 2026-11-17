@@ -21,8 +21,12 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
       把仓库加入索引
   repo list [--service-config 路径] [--json]
       查看索引中的仓库
+  repo unblock <仓库>              解除体积保护，恢复同步
+  repo compact [仓库]...           就地转为浅克隆
 
 查询命令（需要先配置服务地址与 key）:
+  repos [参数]                    列出服务器上的仓库
+  status [参数]                   查看同步状态
   get [参数] <仓库> <路径>        读取文件内容
   tree [参数] <仓库> [目录]       列出目录
   search [参数] <仓库> <关键词>   在仓库内检索
@@ -35,6 +39,10 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   config set key <key>            设置 key
   config show [--json]            查看当前配置（key 打码）
   config path                     打印配置文件位置
+
+其它:
+  version                         打印构建信息
+  help                            打印本帮助
 
 查询命令通用参数:
   --config 路径   指定客户端配置文件
@@ -79,6 +87,12 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runBundle(rest, stdout, stderr)
 	case "sync":
 		return runSync(rest, stdout, stderr)
+	case "repos":
+		return runRepos(rest, stdout, stderr)
+	case "status":
+		return runStatus(rest, stdout, stderr)
+	case "version":
+		return runVersion(rest, stdout, stderr)
 	case "config":
 		return runConfig(rest, stdout, stderr)
 	default:

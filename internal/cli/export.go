@@ -15,7 +15,7 @@ func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
-	options.register(flags, false)
+	options.register(flags, true)
 	output := flags.String("o", "", "输出文件路径")
 	format := flags.String("format", "zip", "打包格式：zip 或 tar.gz")
 
@@ -69,8 +69,7 @@ func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "已保存 %s\n", target)
-	return 0
+	return reportSaved(stdout, stderr, target, options.asJSON)
 }
 
 // runBundle 下载带历史的 bundle。
@@ -79,7 +78,7 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
-	options.register(flags, false)
+	options.register(flags, true)
 	output := flags.String("o", "", "输出文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
@@ -129,6 +128,21 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "已保存 %s\n", target)
+	return 0
+}
+
+// reportSaved 回报保存结果，附文件大小，便于确认不是空包。
+func reportSaved(stdout io.Writer, stderr io.Writer, path string, asJSON bool) int {
+	info, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "读取结果文件失败: %v\n", err)
+		return 1
+	}
+
+	if asJSON {
+		return writeJSON(stdout, stderr, map[string]any{"saved": path, "bytes": info.Size()})
+	}
+	fmt.Fprintf(stdout, "已保存 %s（%d 字节）\n", path, info.Size())
 	return 0
 }
 

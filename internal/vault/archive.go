@@ -39,6 +39,26 @@ type ArchiveTarget struct {
 // ErrArchiveTooLarge 表示导出内容超过上限。
 var ErrArchiveTooLarge = fmt.Errorf("archive exceeds size limit")
 
+// ValidateTargets 在写响应头之前确认目标都存在，避免错误被提前提交成 200。
+func (v *Vault) ValidateTargets(targets []ArchiveTarget) error {
+	for _, target := range targets {
+		rel, err := cleanPath(target.Path)
+		if err != nil {
+			return err
+		}
+		root, err := v.open(target.Repo)
+		if err != nil {
+			return err
+		}
+		_, statErr := root.Stat(rel)
+		root.Close()
+		if statErr != nil {
+			return describe(statErr)
+		}
+	}
+	return nil
+}
+
 // WriteArchive 把若干目标边读边写成压缩包。
 func (v *Vault) WriteArchive(targets []ArchiveTarget, format string, w io.Writer) error {
 	if len(targets) == 0 {

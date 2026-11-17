@@ -252,6 +252,8 @@ eucli-dw repo unblock [--service-config 路径] <仓库>
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
 eucli-dw search [参数] <仓库> <关键词>
+eucli-dw repos [--json]             列出服务器上的仓库与提交号
+eucli-dw status [--json]            查看同步状态
 eucli-dw sync <仓库> | sync --all
 eucli-dw pull <仓库>[:路径] ... [-o 文件]
 eucli-dw bundle <仓库> [-o 文件]
@@ -290,6 +292,8 @@ eucli-dw tree claw-code docs
 eucli-dw search claw-code subagent --limit 5
 eucli-dw get claw-code README.md --json     # 带提交号的 JSON
 ```
+
+`repos` 与 `status` 是客户端命令，只走网络；`status` 至少给出运行状态、上轮结果统计、下一轮预计时间与失败明细。
 
 `config show` 只显示 key 的首尾各四位；查询命令都支持把参数写在位置参数之后，也支持 `--json` 输出原始结构，便于脚本与 Agent 消费。
 

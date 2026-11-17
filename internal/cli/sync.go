@@ -25,6 +25,10 @@ func runSync(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "用法: eucli-dw sync <仓库>   或   eucli-dw sync --all")
 		return 2
 	}
+	if *all && flags.NArg() > 0 {
+		fmt.Fprintln(stderr, "sync --all 与仓库名不能同时使用：要么同步一个，要么同步全部")
+		return 2
+	}
 
 	client, err := options.client()
 	if err != nil {

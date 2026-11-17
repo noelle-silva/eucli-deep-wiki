@@ -319,3 +319,16 @@ func writeFile(t *testing.T, dir string, name string, content string) {
 		t.Fatalf("write file: %v", err)
 	}
 }
+
+func TestArchiveReportsMissingPath(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/archive?path=nodir"))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+}

@@ -19,7 +19,7 @@ type SearchResult struct {
 	Query     string  `json:"query"`
 	Matches   []Match `json:"matches"`
 	Scanned   int     `json:"scannedFiles"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Truncated bool    `json:"truncated"`
 }
 
 // Search 在仓库内按行做子串匹配，遇到目录边界与体积上限即停。

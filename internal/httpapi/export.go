@@ -70,6 +70,22 @@ func writeArchive(w http.ResponseWriter, r *http.Request, repoVault *vault.Vault
 		format = vault.FormatZip
 	}
 
+	switch format {
+	case vault.FormatZip, vault.FormatTarGz:
+	default:
+		writeJSON(w, http.StatusBadRequest, apiError{
+			Code:    "invalid_format",
+			Message: "format 只支持 zip 或 tar.gz",
+		})
+		return
+	}
+
+	// 先确认目标存在：压缩包一旦开始写就无法再改状态码。
+	if err := repoVault.ValidateTargets(targets); err != nil {
+		writeVaultError(w, err)
+		return
+	}
+
 	filename := "archive"
 	if len(targets) == 1 && targets[0].Repo != "" {
 		filename = targets[0].Repo
@@ -82,12 +98,6 @@ func writeArchive(w http.ResponseWriter, r *http.Request, repoVault *vault.Vault
 	case vault.FormatTarGz:
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+".tar.gz\"")
-	default:
-		writeJSON(w, http.StatusBadRequest, apiError{
-			Code:    "invalid_format",
-			Message: "format 只支持 zip 或 tar.gz",
-		})
-		return
 	}
 
 	if err := repoVault.WriteArchive(targets, format, w); err != nil {

@@ -170,3 +170,19 @@ func TestSyncOneReturnsResult(t *testing.T) {
 		t.Fatalf("syncCalls = %d, want 1", git.syncCalls)
 	}
 }
+
+func TestSyncOneRecordsSingleResult(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "skipped"}}
+	target, _ := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	if _, err := target.SyncOne(context.Background(), "example"); err != nil {
+		t.Fatalf("SyncOne() error = %v", err)
+	}
+
+	snapshot := target.store.Snapshot()
+	if len(snapshot.SingleResults) != 1 || snapshot.SingleResults[0].Name != "example" {
+		t.Fatalf("SingleResults = %#v", snapshot.SingleResults)
+	}
+}

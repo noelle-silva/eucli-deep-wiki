@@ -56,7 +56,7 @@ func runRepoAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo add", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
-	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -101,7 +101,7 @@ func runRepoList(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo list", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
-	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 	asJSON := flags.Bool("json", false, "输出原始 JSON")
 
 	if err := parseArgs(flags, args); err != nil {
@@ -154,7 +154,7 @@ func runRepoUnblock(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo unblock", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
-	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -196,7 +196,7 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo compact", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
-	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)

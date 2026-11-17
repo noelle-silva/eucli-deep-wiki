@@ -51,12 +51,14 @@ func (r *Runner) Loop(ctx context.Context) {
 
 	ticker := time.NewTicker(r.cfg.SyncIntervalDuration)
 	defer ticker.Stop()
+	r.store.SetNextRun(time.Now().Add(r.cfg.SyncIntervalDuration))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			r.store.SetNextRun(time.Now().Add(r.cfg.SyncIntervalDuration))
 			if err := r.SyncOnce(ctx); err != nil {
 				log.Printf("scheduled sync completed with errors: %v", err)
 			}
@@ -198,6 +200,7 @@ func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error
 
 	result := r.syncOne(ctx, target)
 	logResult(result)
+	r.store.RecordSingle(result)
 	return result, nil
 }
 

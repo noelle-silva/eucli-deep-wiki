@@ -29,7 +29,7 @@ func runServe(args []string, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 
-	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
 	httpAddress := flags.String("http-address", "", "覆盖监听地址")
 	once := flags.Bool("once", false, "只同步一轮后退出")
 

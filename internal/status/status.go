@@ -11,12 +11,16 @@ type Snapshot struct {
 	Running        bool            `json:"running"`
 	LastStartedAt  time.Time       `json:"lastStartedAt,omitempty"`
 	LastFinishedAt time.Time       `json:"lastFinishedAt,omitempty"`
+	NextRunAt      time.Time       `json:"nextRunAt,omitempty"`
 	Results        []gitops.Result `json:"results"`
+	SingleResults  []gitops.Result `json:"singleResults"`
+	LastSingleAt   time.Time       `json:"lastSingleAt,omitempty"`
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	snapshot Snapshot
+	mu        sync.RWMutex
+	snapshot  Snapshot
+	nextRunAt time.Time
 }
 
 func NewStore() *Store {
@@ -44,11 +48,33 @@ func (s *Store) Finish(finishedAt time.Time) {
 	s.snapshot.LastFinishedAt = finishedAt
 }
 
+// RecordSingle 记录一次按需同步，供 /status 反映「刚才那次到底成没成」。
+func (s *Store) RecordSingle(result gitops.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.snapshot.LastSingleAt = result.FinishedAt
+	s.snapshot.SingleResults = append(s.snapshot.SingleResults, result)
+	const keep = 20
+	if len(s.snapshot.SingleResults) > keep {
+		s.snapshot.SingleResults = s.snapshot.SingleResults[len(s.snapshot.SingleResults)-keep:]
+	}
+}
+
+// SetNextRun 记录下一轮定时同步的时间。
+func (s *Store) SetNextRun(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextRunAt = at
+	s.snapshot.NextRunAt = at
+}
+
 func (s *Store) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	copy := s.snapshot
-	copy.Results = append([]gitops.Result(nil), s.snapshot.Results...)
-	return copy
+	copied := s.snapshot
+	copied.Results = append([]gitops.Result(nil), s.snapshot.Results...)
+	copied.SingleResults = append([]gitops.Result(nil), s.snapshot.SingleResults...)
+	return copied
 }

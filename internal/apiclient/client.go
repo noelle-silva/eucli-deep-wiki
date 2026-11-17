@@ -38,18 +38,20 @@ type RepoMeta struct {
 
 // Entry 是目录项。
 type Entry struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Type string `json:"type"`
-	Size int64  `json:"size,omitempty"`
+	Name       string    `json:"name"`
+	Path       string    `json:"path"`
+	Type       string    `json:"type"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modifiedAt,omitempty"`
 }
 
 // Tree 是目录树结果。
 type Tree struct {
 	Repo      string  `json:"repo"`
+	Revision  string  `json:"revision"`
 	Path      string  `json:"path"`
 	Entries   []Entry `json:"entries"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Truncated bool    `json:"truncated"`
 }
 
 // Match 是一处检索命中。
@@ -64,7 +66,8 @@ type SearchResult struct {
 	Repo      string  `json:"repo"`
 	Query     string  `json:"query"`
 	Matches   []Match `json:"matches"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Scanned   int     `json:"scannedFiles"`
+	Truncated bool    `json:"truncated"`
 }
 
 // File 是文件读取结果。
@@ -231,6 +234,15 @@ func (c *Client) stream(ctx context.Context, path string, query url.Values, w io
 
 	_, err = io.Copy(w, response.Body)
 	return err
+}
+
+// Status 读取服务端同步状态快照，原样返回 JSON。
+func (c *Client) Status(ctx context.Context) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := c.getJSON(ctx, "/status", nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // SyncResult 是一次按需同步的结果。

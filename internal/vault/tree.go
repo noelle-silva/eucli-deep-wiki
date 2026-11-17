@@ -13,17 +13,17 @@ type Entry struct {
 	Name       string    `json:"name"`
 	Path       string    `json:"path"`
 	Type       string    `json:"type"`
-	Size       int64     `json:"size,omitempty"`
+	Size       int64     `json:"size"`
 	ModifiedAt time.Time `json:"modifiedAt,omitempty"`
 }
 
 // Tree 是一层目录的展开结果。
 type Tree struct {
 	Repo      string  `json:"repo"`
-	Revision  string  `json:"revision,omitempty"`
+	Revision  string  `json:"revision"`
 	Path      string  `json:"path"`
 	Entries   []Entry `json:"entries"`
-	Truncated bool    `json:"truncated,omitempty"`
+	Truncated bool    `json:"truncated"`
 }
 
 // Tree 列出仓库内某个目录的直接子项。

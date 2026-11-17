@@ -35,7 +35,7 @@ func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	file, err := client.File(context.Background(), repo, target)
 	if err != nil {
-		fmt.Fprintf(stderr, "读取失败: %v\n", err)
+		reportError(stderr, err, options.asJSON)
 		return 1
 	}
 
@@ -82,7 +82,7 @@ func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	tree, err := client.Tree(context.Background(), repo, target)
 	if err != nil {
-		fmt.Fprintf(stderr, "读取失败: %v\n", err)
+		reportError(stderr, err, options.asJSON)
 		return 1
 	}
 
@@ -131,7 +131,7 @@ func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	result, err := client.Search(context.Background(), repo, query, *limit)
 	if err != nil {
-		fmt.Fprintf(stderr, "检索失败: %v\n", err)
+		reportError(stderr, err, options.asJSON)
 		return 1
 	}
 

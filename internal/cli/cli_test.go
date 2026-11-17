@@ -219,3 +219,71 @@ func TestUnknownSubcommandExplainsUsage(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
+
+func TestReposListsServerRepositories(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/repos" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"repositories":[{"name":"example","branch":"main","revision":"abcdef1234567890"}]}`))
+	}))
+	defer server.Close()
+
+	stdout := &bytes.Buffer{}
+	code := Run([]string{"repos", "--server", server.URL, "--key", "0123456789abcdef",
+		"--config", filepath.Join(t.TempDir(), "absent.json")}, stdout, &bytes.Buffer{})
+
+	if code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !strings.Contains(stdout.String(), "example") || !strings.Contains(stdout.String(), "abcdef123456") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestSyncAllRejectsRepositoryArgument(t *testing.T) {
+	t.Parallel()
+
+	stderr := &bytes.Buffer{}
+	code := Run([]string{"sync", "--all", "some-repo"}, &bytes.Buffer{}, stderr)
+
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "不能同时使用") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestJSONModeEmitsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"repo_not_found","message":"仓库不存在"}`))
+	}))
+	defer server.Close()
+
+	stderr := &bytes.Buffer{}
+	code := Run([]string{"get", "ghost", "README.md", "--json",
+		"--server", server.URL, "--key", "0123456789abcdef",
+		"--config", filepath.Join(t.TempDir(), "absent.json")}, &bytes.Buffer{}, stderr)
+
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+
+	var payload struct {
+		OK     bool   `json:"ok"`
+		Code   string `json:"code"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &payload); err != nil {
+		t.Fatalf("stderr 不是合法 JSON: %v (%q)", err, stderr.String())
+	}
+	if payload.OK || payload.Code != "repo_not_found" || payload.Status != 404 {
+		t.Fatalf("payload = %#v", payload)
+	}
+}

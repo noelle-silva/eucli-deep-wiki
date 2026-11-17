@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"eucli-deep-wiki/internal/apiclient"
 	"eucli-deep-wiki/internal/settings"
@@ -25,6 +28,38 @@ func (f *clientFlags) register(flags *flag.FlagSet, withJSON bool) {
 	if withJSON {
 		flags.BoolVar(&f.asJSON, "json", false, "输出原始 JSON")
 	}
+}
+
+// defaultServiceConfig 优先使用可执行文件同级的部署配置，
+// 这样在部署目录里直接运行不必带参数；开发时再回退到仓库内路径。
+func defaultServiceConfig() string {
+	if executable, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(executable), "config", "config.json")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "configs/config.json"
+}
+
+// reportError 输出错误；带 --json 时给出结构化错误，便于程序判断。
+func reportError(stderr io.Writer, err error, asJSON bool) {
+	if !asJSON {
+		fmt.Fprintf(stderr, "读取失败: %v\n", err)
+		return
+	}
+
+	payload := map[string]any{"ok": false, "message": err.Error()}
+	var apiErr *apiclient.APIError
+	if errors.As(err, &apiErr) {
+		payload["status"] = apiErr.StatusCode
+		payload["code"] = apiErr.Code
+		payload["message"] = apiErr.Message
+	}
+
+	encoder := json.NewEncoder(stderr)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(payload)
 }
 
 // client 按「命令行参数 → 配置文件」的顺序确定连接信息。
