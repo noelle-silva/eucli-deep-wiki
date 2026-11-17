@@ -68,6 +68,41 @@ go run ./cmd/reference-sync -config <配置文件路径>   # 长期运行
 go run ./cmd/reference-sync -config <配置文件路径> -once   # 只同步一轮
 ```
 
+## Windows 启动脚本
+
+Windows 侧由 `scripts/windows/` 下的两个脚本负责拉起，脚本本身不含任何绝对路径，取值全部来自同目录的 `deploy.env`：
+
+```text
+scripts/windows/
+├── start.bat                 # 干活的：读配置、判重、启动、重定向日志
+├── start-hidden.vbs          # 只是壳：隐藏窗口调用 start.bat
+├── deploy.env.example        # 取值样例（入库）
+└── deploy.env                # 本机取值（不入库）
+```
+
+```sh
+cp scripts/windows/deploy.env.example scripts/windows/deploy.env
+```
+
+| 取值 | 含义 |
+| --- | --- |
+| `EUCLI_DEPLOY_DIR` | 部署目录，二进制与数据所在处 |
+| `EUCLI_EXE` | 二进制文件名，仅用于进程判重 |
+| `EUCLI_CONFIG` | 配置文件，可相对部署目录，也可绝对路径 |
+| `EUCLI_LOG_DIR` / `EUCLI_LOG_FILE` | 日志目录与文件名 |
+
+两层分工：`start.bat` 是唯一逻辑出口，直接双击能看到每一步提示；`start-hidden.vbs` 只有一句 `Run`，不重复任何判断。开机自启把快捷方式指向 `start-hidden.vbs`，放进 `shell:startup` 即可。
+
+日志形如：
+
+```text
+[eucli] 启动 reference-sync.exe
+[eucli] 配置 E:\...\config\config.json
+[eucli] 日志 E:\...\logs\sync.log
+```
+
+重复执行会被判重拦下，输出 `已在运行，跳过启动`。
+
 ## 仓库索引
 
 `repositories.json` 记录参考仓库名单，位于 `dataRoot` 之下。可以直接用 Git 链接追加，工具会从链接末尾推导本地目录名，并在写入前统一校验：
