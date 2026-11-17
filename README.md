@@ -157,6 +157,46 @@ go run ./cmd/reference-add -config <配置文件路径> https://github.com/xxxx/
 http://127.0.0.1:9997/status
 ```
 
+## 只读查询接口
+
+服务对已同步的参考仓库提供只读 HTTP 接口，供人和 Agent 按需取用。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /v1/repos` | 仓库清单，含分支与当前提交号 |
+| `GET /v1/repos/{name}` | 单个仓库的元数据 |
+| `GET /v1/repos/{name}/tree?path=` | 目录树，目录优先，隐藏 `.git` |
+| `GET /v1/repos/{name}/file?path=` | 读取文本文件 |
+| `GET /v1/repos/{name}/search?q=&limit=` | 按行子串检索 |
+
+```sh
+curl http://127.0.0.1:9997/v1/repos
+curl "http://127.0.0.1:9997/v1/repos/claw-code/tree?path=docs"
+curl "http://127.0.0.1:9997/v1/repos/claw-code/file?path=README.md"
+curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
+```
+
+文件响应带三个头，便于判断内容是否变化：
+
+| 响应头 | 含义 |
+| --- | --- |
+| `ETag` | 内容的 SHA-256 摘要，请求带 `If-None-Match` 命中时返回 `304` |
+| `Last-Modified` | 文件修改时间 |
+| `X-Repo-Revision` | 该仓库当前的提交号 |
+
+边界处理都是明确报错，不做静默兜底：
+
+| 情况 | 响应 |
+| --- | --- |
+| 路径越出仓库 | `400 invalid_path` |
+| 仓库不存在或尚未同步 | `404 repo_not_found` |
+| 目标不是普通文件 | `400 not_a_file` |
+| 文件超过 1 MiB | `413 file_too_large` |
+| 文件不是 UTF-8 文本 | `415 not_text` |
+| 检索词为空 | `400 query_required` |
+
+所有路径都经 `os.Root` 收敛，符号链接无法把访问带出仓库；目录树与检索都会跳过 `.git`。
+
 ## 开发资料目录
 
 开发过程中的任务记录、设计决定与工作区约定统一放在 `.dev-management/`，该目录拥有独立的 Git 记录。

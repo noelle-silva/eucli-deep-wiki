@@ -17,6 +17,7 @@ import (
 	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/runner"
 	"eucli-deep-wiki/internal/status"
+	"eucli-deep-wiki/internal/vault"
 )
 
 func main() {
@@ -40,6 +41,15 @@ func main() {
 		log.Fatalf("load repository index: %v", err)
 	}
 
+	names := make([]string, 0, len(index.Repositories))
+	for _, repo := range index.Repositories {
+		names = append(names, repo.Name)
+	}
+	repoVault, err := vault.New(cfg.RepositoryDir(), names, vault.DefaultLimits())
+	if err != nil {
+		log.Fatalf("build read vault: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -56,7 +66,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(store),
+		Handler:           httpapi.NewRouter(store, repoVault),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
