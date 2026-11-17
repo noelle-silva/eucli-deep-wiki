@@ -118,6 +118,7 @@ func runStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 	var snapshot struct {
 		Running        bool   `json:"running"`
+		Total          int    `json:"total"`
 		LastStartedAt  string `json:"lastStartedAt"`
 		LastFinishedAt string `json:"lastFinishedAt"`
 		NextRunAt      string `json:"nextRunAt"`
@@ -143,9 +144,15 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 	}
 
 	fmt.Fprintf(stdout, "状态:     %s\n", state)
-	fmt.Fprintf(stdout, "上轮开始: %s\n", orDash(snapshot.LastStartedAt))
-	fmt.Fprintf(stdout, "上轮结束: %s\n", orDash(snapshot.LastFinishedAt))
-	fmt.Fprintf(stdout, "下轮预计: %s\n", orDash(snapshot.NextRunAt))
+	if snapshot.Running {
+		fmt.Fprintf(stdout, "本轮开始: %s\n", orDash(snapshot.LastStartedAt))
+		fmt.Fprintf(stdout, "本轮进度: %d/%d\n", len(snapshot.Results), snapshot.Total)
+		fmt.Fprintf(stdout, "下轮预计: %s\n", orDash(snapshot.NextRunAt))
+	} else {
+		fmt.Fprintf(stdout, "上轮开始: %s\n", orDash(snapshot.LastStartedAt))
+		fmt.Fprintf(stdout, "上轮结束: %s\n", orDash(snapshot.LastFinishedAt))
+		fmt.Fprintf(stdout, "下轮预计: %s\n", orDash(snapshot.NextRunAt))
+	}
 
 	counts := map[string]int{}
 	failures := []string{}
@@ -155,7 +162,12 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 			failures = append(failures, result.Name+": "+result.Error)
 		}
 	}
-	fmt.Fprintf(stdout, "上轮结果: %d 个仓库 %s\n", len(snapshot.Results), formatCounts(counts))
+
+	if snapshot.Running {
+		fmt.Fprintf(stdout, "已处理:   %d 个仓库 %s\n", len(snapshot.Results), formatCounts(counts))
+	} else {
+		fmt.Fprintf(stdout, "上轮结果: %d 个仓库 %s\n", len(snapshot.Results), formatCounts(counts))
+	}
 
 	if len(snapshot.SingleResults) > 0 {
 		last := snapshot.SingleResults[len(snapshot.SingleResults)-1]

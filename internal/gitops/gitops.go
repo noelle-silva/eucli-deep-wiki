@@ -152,6 +152,11 @@ func (c *Client) convertDepth(ctx context.Context, repo Repository, path string)
 	return branch, "expanded", nil
 }
 
+// IsShallow 判断仓库当前是否是浅克隆。
+func (c *Client) IsShallow(ctx context.Context, path string) (bool, error) {
+	return c.isShallowRepository(ctx, path)
+}
+
 // Compact 把已存在的完整仓库就地转为浅克隆。
 func (c *Client) Compact(ctx context.Context, path string) error {
 	_, err := c.shrinkToShallow(ctx, path)

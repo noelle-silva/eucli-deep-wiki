@@ -9,6 +9,8 @@ import (
 
 type Snapshot struct {
 	Running        bool            `json:"running"`
+	Total          int             `json:"total"`
+	Summary        map[string]int  `json:"summary"`
 	LastStartedAt  time.Time       `json:"lastStartedAt,omitempty"`
 	LastFinishedAt time.Time       `json:"lastFinishedAt,omitempty"`
 	NextRunAt      time.Time       `json:"nextRunAt,omitempty"`
@@ -27,12 +29,14 @@ func NewStore() *Store {
 	return &Store{}
 }
 
-func (s *Store) Begin(startedAt time.Time) {
+func (s *Store) Begin(startedAt time.Time, total int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snapshot.Running = true
 	s.snapshot.LastStartedAt = startedAt
 	s.snapshot.Results = nil
+	s.snapshot.Total = total
+	s.snapshot.Summary = nil
 }
 
 func (s *Store) AddResult(result gitops.Result) {
@@ -46,6 +50,12 @@ func (s *Store) Finish(finishedAt time.Time) {
 	defer s.mu.Unlock()
 	s.snapshot.Running = false
 	s.snapshot.LastFinishedAt = finishedAt
+
+	summary := make(map[string]int, len(s.snapshot.Results))
+	for _, result := range s.snapshot.Results {
+		summary[result.Action]++
+	}
+	s.snapshot.Summary = summary
 }
 
 // RecordSingle 记录一次按需同步，供 /status 反映「刚才那次到底成没成」。

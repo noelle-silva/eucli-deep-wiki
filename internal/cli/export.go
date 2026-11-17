@@ -92,6 +92,7 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 	options := &clientFlags{}
 	options.register(flags, true)
 	output := flags.String("o", "", "输出文件路径")
+	progress := flags.Bool("progress", false, "下载过程中在 stderr 输出进度")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -120,7 +121,17 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	err = client.Bundle(context.Background(), repository, file)
+	var sink io.Writer = file
+	var reporter *progressWriter
+	if *progress {
+		reporter = &progressWriter{target: file, out: stderr, last: time.Now()}
+		sink = reporter
+	}
+
+	err = client.Bundle(context.Background(), repository, sink)
+	if reporter != nil {
+		reporter.done()
+	}
 	closeErr := file.Close()
 	if err != nil {
 		_ = os.Remove(temporary)
@@ -139,8 +150,7 @@ func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "已保存 %s\n", target)
-	return 0
+	return reportSaved(stdout, stderr, target, options.asJSON)
 }
 
 // progressWriter 每两秒向 stderr 汇报已写入的字节数。

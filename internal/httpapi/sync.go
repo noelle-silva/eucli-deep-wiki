@@ -40,7 +40,7 @@ func syncAllRepositories(trigger SyncTrigger) http.HandlerFunc {
 func writeSyncError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, runner.ErrRepoNotManaged):
-		writeJSON(w, http.StatusNotFound, apiError{Code: "repo_not_found", Message: "仓库不在索引中"})
+		writeJSON(w, http.StatusNotFound, apiError{Code: "repo_not_found", Message: "仓库不存在或尚未同步"})
 	case errors.Is(err, runner.ErrSyncBusy):
 		writeJSON(w, http.StatusConflict, apiError{Code: "sync_busy", Message: "已有同步任务在运行，请稍后再试"})
 	default:

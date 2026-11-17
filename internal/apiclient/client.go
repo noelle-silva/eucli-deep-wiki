@@ -48,15 +48,17 @@ type FoundEntry struct {
 // FindResult 是文件名检索结果。
 type FindResult struct {
 	Repo      string       `json:"repo"`
+	Revision  string       `json:"revision"`
 	Pattern   string       `json:"pattern"`
 	Path      string       `json:"path,omitempty"`
+	Offset    int          `json:"offset"`
 	Entries   []FoundEntry `json:"entries"`
 	Scanned   int          `json:"scannedFiles"`
 	Truncated bool         `json:"truncated"`
 }
 
 // Find 按文件名检索，支持通配符与子串。
-func (c *Client) Find(ctx context.Context, name string, pattern string, target string, limit int) (FindResult, error) {
+func (c *Client) Find(ctx context.Context, name string, pattern string, target string, limit int, offset int) (FindResult, error) {
 	values := url.Values{}
 	values.Set("name", pattern)
 	if target != "" {
@@ -64,6 +66,9 @@ func (c *Client) Find(ctx context.Context, name string, pattern string, target s
 	}
 	if limit > 0 {
 		values.Set("limit", strconv.Itoa(limit))
+	}
+	if offset > 0 {
+		values.Set("offset", strconv.Itoa(offset))
 	}
 
 	var result FindResult
@@ -109,6 +114,7 @@ type Match struct {
 // SearchResult 是检索结果。
 type SearchResult struct {
 	Repo      string  `json:"repo"`
+	Revision  string  `json:"revision"`
 	Query     string  `json:"query"`
 	Path      string  `json:"path,omitempty"`
 	Offset    int     `json:"offset"`

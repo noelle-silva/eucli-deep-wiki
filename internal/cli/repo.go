@@ -271,6 +271,7 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	client := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
 	compacted := 0
+	skipped := 0
 
 	for _, repository := range index.Repositories {
 		if len(wanted) > 0 {
@@ -285,6 +286,20 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 
 		path := filepath.Join(cfg.RepositoryDir(), repository.Name)
+
+		alreadyShallow, err := client.IsShallow(context.Background(), path)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s\t检查失败: %v\n", repository.Name, err)
+			return 1
+		}
+		if alreadyShallow {
+			if *dryRun {
+				fmt.Fprintf(stdout, "%s\t已是浅克隆，无需转换\n", repository.Name)
+			}
+			skipped++
+			continue
+		}
+
 		if *dryRun {
 			fmt.Fprintf(stdout, "%s\t将会就地转为浅克隆\n", repository.Name)
 			compacted++
@@ -299,10 +314,14 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if *dryRun {
-		fmt.Fprintf(stdout, "预演完成，共 %d 个仓库待转换（未执行）\n", compacted)
+		if compacted == 0 {
+			fmt.Fprintf(stdout, "预演完成：没有需要转换的仓库（%d 个已是浅克隆，未执行）\n", skipped)
+			return 0
+		}
+		fmt.Fprintf(stdout, "预演完成：待转换 %d 个，已是浅克隆 %d 个（未执行）\n", compacted, skipped)
 		return 0
 	}
-	fmt.Fprintf(stdout, "完成，共处理 %d 个仓库\n", compacted)
+	fmt.Fprintf(stdout, "完成：转换 %d 个，已是浅克隆跳过 %d 个\n", compacted, skipped)
 	return 0
 }
 

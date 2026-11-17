@@ -18,8 +18,10 @@ type FoundEntry struct {
 // FindResult 是一次文件名检索的结果。
 type FindResult struct {
 	Repo      string       `json:"repo"`
+	Revision  string       `json:"revision"`
 	Pattern   string       `json:"pattern"`
 	Path      string       `json:"path,omitempty"`
+	Offset    int          `json:"offset"`
 	Entries   []FoundEntry `json:"entries"`
 	Scanned   int          `json:"scannedFiles"`
 	Truncated bool         `json:"truncated"`
@@ -30,6 +32,7 @@ type FindOptions struct {
 	Pattern string
 	Path    string
 	Limit   int
+	Offset  int
 }
 
 const (
@@ -69,13 +72,21 @@ func (v *Vault) Find(name string, options FindOptions) (FindResult, error) {
 	}
 
 	matcher := buildNameMatcher(pattern)
-	result := FindResult{
-		Repo:    name,
-		Pattern: pattern,
-		Path:    options.Path,
-		Entries: []FoundEntry{},
+	offset := options.Offset
+	if offset < 0 {
+		offset = 0
 	}
 
+	result := FindResult{
+		Repo:     name,
+		Revision: readMetaRevision(name, v.repos[name]),
+		Pattern:  pattern,
+		Path:     options.Path,
+		Offset:   offset,
+		Entries:  []FoundEntry{},
+	}
+
+	matched := 0
 	walkErr := fs.WalkDir(root.FS(), rel, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -92,6 +103,15 @@ func (v *Vault) Find(name string, options FindOptions) (FindResult, error) {
 			return nil
 		}
 
+		matched++
+		if matched <= offset {
+			return nil
+		}
+		if len(result.Entries) >= limit {
+			result.Truncated = true
+			return fs.SkipAll
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			return nil
@@ -102,10 +122,6 @@ func (v *Vault) Find(name string, options FindOptions) (FindResult, error) {
 			Type: "file",
 			Size: info.Size(),
 		})
-		if len(result.Entries) >= limit {
-			result.Truncated = true
-			return fs.SkipAll
-		}
 		return nil
 	})
 

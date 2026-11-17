@@ -105,7 +105,7 @@ func (r *Runner) release() {
 
 func (r *Runner) runCycle(ctx context.Context) error {
 	startedAt := time.Now()
-	r.store.Begin(startedAt)
+	r.store.Begin(startedAt, len(r.repos))
 	defer func() { r.store.Finish(time.Now()) }()
 
 	log.Printf("sync started for %d repositories", len(r.repos))

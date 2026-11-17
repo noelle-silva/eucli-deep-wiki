@@ -18,6 +18,7 @@ func runFind(args []string, stdout io.Writer, stderr io.Writer) int {
 	options.register(flags, true)
 	searchPath := flags.String("path", "", "只在指定目录内查找")
 	limit := flags.Int("limit", 0, "最多返回多少条结果")
+	offset := flags.Int("offset", 0, "跳过前多少条结果，用于翻页")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -33,7 +34,7 @@ func runFind(args []string, stdout io.Writer, stderr io.Writer) int {
 		return exitFailure
 	}
 
-	result, err := client.Find(context.Background(), flags.Arg(0), flags.Arg(1), *searchPath, *limit)
+	result, err := client.Find(context.Background(), flags.Arg(0), flags.Arg(1), *searchPath, *limit, *offset)
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
 		return exitCodeFor(err)
@@ -53,7 +54,7 @@ func runFind(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\t%d\n", entry.Path, entry.Size)
 	}
 	if result.Truncated {
-		fmt.Fprintf(stdout, "（结果已达上限，共检查 %d 个文件，可用 --limit 调整）\n", result.Scanned)
+		fmt.Fprintf(stdout, "（还有更多结果，可用 --offset %d 继续；已检查 %d 个文件）\n", result.Offset+len(result.Entries), result.Scanned)
 	}
 	return 0
 }

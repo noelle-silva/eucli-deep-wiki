@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"eucli-deep-wiki/internal/apiclient"
@@ -33,9 +36,13 @@ func (f *clientFlags) register(flags *flag.FlagSet, withJSON bool) {
 	flags.IntVar(&f.timeout, "timeout", 0, "请求超时秒数，0 表示使用默认值")
 }
 
-// defaultServiceConfig 依次尝试：可执行文件同级的部署配置、当前目录的
-// config/ 与 configs/。这样从部署目录或从仓库根目录运行都能找到配置。
+// defaultServiceConfig 依次尝试：环境变量、可执行文件同级的部署配置、
+// 当前目录的 config/ 与 configs/。安装到 PATH 后从任意目录都能找到部署配置。
 func defaultServiceConfig() string {
+	if configured := strings.TrimSpace(os.Getenv("EUCLI_DW_SERVICE_CONFIG")); configured != "" {
+		return configured
+	}
+
 	candidates := make([]string, 0, 3)
 	if executable, err := os.Executable(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config", "config.json"))
@@ -56,7 +63,7 @@ func defaultServiceConfig() string {
 // reportError 输出错误；带 --json 时给出结构化错误，便于程序判断。
 func reportError(stderr io.Writer, err error, asJSON bool) {
 	if !asJSON {
-		fmt.Fprintf(stderr, "读取失败: %v\n", err)
+		fmt.Fprintf(stderr, "失败: %v\n", err)
 		return
 	}
 
@@ -66,11 +73,22 @@ func reportError(stderr io.Writer, err error, asJSON bool) {
 		payload["status"] = apiErr.StatusCode
 		payload["code"] = apiErr.Code
 		payload["message"] = apiErr.Message
+	} else if isNetworkError(err) {
+		payload["code"] = "network_error"
 	}
 
 	encoder := json.NewEncoder(stderr)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(payload)
+}
+
+// isNetworkError 判断是否为连接或超时类错误。
+func isNetworkError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // client 按「命令行参数 → 配置文件」的顺序确定连接信息。

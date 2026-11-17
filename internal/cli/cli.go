@@ -58,6 +58,11 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   eucli-dw get claw-code README.md
   eucli-dw search claw-code subagent --json
   eucli-dw find claw-code "*.md" --path docs
+
+退出码:
+  0 成功           1 其它失败        2 用法错误
+  3 未找到         4 鉴权失败        5 网络或超时
+  6 任务冲突       7 被拒绝（过大 / 非文本）
 `
 
 // Run 执行一次命令行调用，返回进程退出码。

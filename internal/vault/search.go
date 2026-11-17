@@ -24,6 +24,7 @@ type SearchOptions struct {
 // SearchResult 是一次检索的结果。
 type SearchResult struct {
 	Repo      string  `json:"repo"`
+	Revision  string  `json:"revision"`
 	Query     string  `json:"query"`
 	Path      string  `json:"path,omitempty"`
 	Offset    int     `json:"offset"`
@@ -63,11 +64,12 @@ func (v *Vault) Search(name string, options SearchOptions) (SearchResult, error)
 	}
 
 	result := SearchResult{
-		Repo:    name,
-		Query:   options.Query,
-		Path:    options.Path,
-		Offset:  offset,
-		Matches: []Match{},
+		Repo:     name,
+		Revision: readMetaRevision(name, v.repos[name]),
+		Query:    options.Query,
+		Path:     options.Path,
+		Offset:   offset,
+		Matches:  []Match{},
 	}
 	// 多取一条用来判断后面还有没有。
 	wanted := offset + limit + 1

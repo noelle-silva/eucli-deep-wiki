@@ -116,6 +116,7 @@ func findFiles(repoVault *vault.Vault) http.HandlerFunc {
 			Pattern: values.Get("name"),
 			Path:    values.Get("path"),
 			Limit:   parseLimit(values.Get("limit")),
+			Offset:  parseLimit(values.Get("offset")),
 		})
 		if err != nil {
 			writeVaultError(w, err)
