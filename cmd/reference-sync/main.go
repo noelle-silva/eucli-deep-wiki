@@ -50,6 +50,11 @@ func main() {
 		log.Fatalf("build read vault: %v", err)
 	}
 
+	auth, err := httpapi.NewAuthenticator(cfg.APIKeys)
+	if err != nil {
+		log.Fatalf("build authenticator: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -66,7 +71,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(store, repoVault),
+		Handler:           httpapi.NewRouter(store, repoVault, auth),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -5,5 +5,8 @@
   "syncInterval": "6h",
   "gitCommandTimeout": "20m",
   "maxParallelSyncs": 2,
-  "httpAddress": "127.0.0.1:9997"
+  "httpAddress": "127.0.0.1:9997",
+  "apiKeys": [
+    "replace-with-a-random-key-at-least-16-chars"
+  ]
 }

@@ -161,6 +161,14 @@ http://127.0.0.1:9997/status
 
 服务对已同步的参考仓库提供只读 HTTP 接口，供人和 Agent 按需取用。
 
+除 `/healthz` 外，所有接口都要求携带 key：
+
+```sh
+curl -H "Authorization: Bearer <key>" http://127.0.0.1:9997/v1/repos
+```
+
+key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于给不同 Agent 分别发放、单独吊销。每个 key 至少 16 个字符，不允许重复或含空白。
+
 | 方法与路径 | 说明 |
 | --- | --- |
 | `GET /v1/repos` | 仓库清单，含分支与当前提交号 |

@@ -6,10 +6,12 @@ import (
 	"testing"
 )
 
+const testKey = "0123456789abcdef"
+
 func TestLoadAppliesDefaultsAndParsesDurations(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{}`)
+	path := writeConfig(t, `{"apiKeys": ["`+testKey+`"]}`)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -34,12 +36,15 @@ func TestLoadAppliesDefaultsAndParsesDurations(t *testing.T) {
 	if cfg.HTTPAddress != DefaultHTTPAddress {
 		t.Fatalf("HTTPAddress = %q", cfg.HTTPAddress)
 	}
+	if len(cfg.APIKeys) != 1 || cfg.APIKeys[0] != testKey {
+		t.Fatalf("APIKeys = %#v", cfg.APIKeys)
+	}
 }
 
 func TestDerivedPathsResolveUnderDataRoot(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"dataRoot": "var", "repositoryRoot": "refs", "repositoryIndex": "index.json"}`)
+	path := writeConfig(t, `{"dataRoot": "var", "repositoryRoot": "refs", "repositoryIndex": "index.json", "apiKeys": ["`+testKey+`"]}`)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -58,7 +63,7 @@ func TestLoadAcceptsAbsoluteDataRoot(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join(t.TempDir(), "eucli-data")
-	path := writeConfig(t, `{"dataRoot": "`+filepath.ToSlash(root)+`"}`)
+	path := writeConfig(t, `{"dataRoot": "`+filepath.ToSlash(root)+`", "apiKeys": ["`+testKey+`"]}`)
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -75,7 +80,7 @@ func TestLoadAcceptsAbsoluteDataRoot(t *testing.T) {
 func TestLoadRejectsEscapingDataRoot(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"dataRoot": "../outside"}`)
+	path := writeConfig(t, `{"dataRoot": "../outside", "apiKeys": ["`+testKey+`"]}`)
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() error = nil, want unsafe dataRoot error")
@@ -85,7 +90,7 @@ func TestLoadRejectsEscapingDataRoot(t *testing.T) {
 func TestLoadRejectsNestedRepositoryRoot(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"repositoryRoot": "tmp/repository"}`)
+	path := writeConfig(t, `{"repositoryRoot": "tmp/repository", "apiKeys": ["`+testKey+`"]}`)
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() error = nil, want nested repositoryRoot error")
@@ -95,7 +100,7 @@ func TestLoadRejectsNestedRepositoryRoot(t *testing.T) {
 func TestLoadRejectsNestedRepositoryIndex(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"repositoryIndex": "nested/index.json"}`)
+	path := writeConfig(t, `{"repositoryIndex": "nested/index.json", "apiKeys": ["`+testKey+`"]}`)
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() error = nil, want nested repositoryIndex error")
@@ -105,7 +110,7 @@ func TestLoadRejectsNestedRepositoryIndex(t *testing.T) {
 func TestLoadRejectsInvalidHTTPAddress(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"httpAddress": "127.0.0.1:not-a-port"}`)
+	path := writeConfig(t, `{"httpAddress": "127.0.0.1:not-a-port", "apiKeys": ["`+testKey+`"]}`)
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() error = nil, want invalid httpAddress error")
@@ -115,10 +120,54 @@ func TestLoadRejectsInvalidHTTPAddress(t *testing.T) {
 func TestLoadRejectsNonPositiveSyncInterval(t *testing.T) {
 	t.Parallel()
 
-	path := writeConfig(t, `{"syncInterval": "0s"}`)
+	path := writeConfig(t, `{"syncInterval": "0s", "apiKeys": ["`+testKey+`"]}`)
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() error = nil, want non-positive syncInterval error")
+	}
+}
+
+func TestLoadRequiresAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `{}`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want missing apiKeys error")
+	}
+}
+
+func TestLoadRejectsShortAPIKey(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `{"apiKeys": ["short"]}`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want short apiKey error")
+	}
+}
+
+func TestLoadRejectsDuplicateAPIKey(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `{"apiKeys": ["`+testKey+`", "`+testKey+`"]}`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want duplicate apiKey error")
+	}
+}
+
+func TestLoadAcceptsMultipleAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `{"apiKeys": ["`+testKey+`", "fedcba9876543210"]}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.APIKeys) != 2 {
+		t.Fatalf("APIKeys = %#v", cfg.APIKeys)
 	}
 }
 

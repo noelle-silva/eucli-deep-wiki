@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+const (
+	// minAPIKeyLength 是单个 key 的长度下限。
+	minAPIKeyLength = 16
+)
+
 // 默认值。四个路径字段都是单层名字，最终都解析到 DataRoot 之下。
 const (
 	DefaultDataRoot          = "data"
@@ -29,13 +34,14 @@ const (
 
 // Config 描述服务的运行形态。
 type Config struct {
-	DataRoot          string `json:"dataRoot"`
-	RepositoryRoot    string `json:"repositoryRoot"`
-	RepositoryIndex   string `json:"repositoryIndex"`
-	SyncInterval      string `json:"syncInterval"`
-	GitCommandTimeout string `json:"gitCommandTimeout"`
-	MaxParallelSyncs  int    `json:"maxParallelSyncs"`
-	HTTPAddress       string `json:"httpAddress"`
+	DataRoot          string   `json:"dataRoot"`
+	RepositoryRoot    string   `json:"repositoryRoot"`
+	RepositoryIndex   string   `json:"repositoryIndex"`
+	SyncInterval      string   `json:"syncInterval"`
+	GitCommandTimeout string   `json:"gitCommandTimeout"`
+	MaxParallelSyncs  int      `json:"maxParallelSyncs"`
+	HTTPAddress       string   `json:"httpAddress"`
+	APIKeys           []string `json:"apiKeys"`
 
 	SyncIntervalDuration      time.Duration `json:"-"`
 	GitCommandTimeoutDuration time.Duration `json:"-"`
@@ -137,6 +143,32 @@ func (c *Config) validate() error {
 	}
 	if err := validateHTTPAddress(c.HTTPAddress); err != nil {
 		return err
+	}
+	return validateAPIKeys(c.APIKeys)
+}
+
+// validateAPIKeys 拒绝空 key、含空白字符的 key 与重复 key。
+// 长度下限只是拦住「随手填一个词」的情况，真正的强度靠随机生成。
+func validateAPIKeys(keys []string) error {
+	if len(keys) == 0 {
+		return errors.New("apiKeys must contain at least one key")
+	}
+
+	seen := make(map[string]struct{}, len(keys))
+	for i, key := range keys {
+		if strings.TrimSpace(key) != key || key == "" {
+			return fmt.Errorf("apiKeys[%d] must not be empty or have surrounding whitespace", i)
+		}
+		if strings.ContainsAny(key, " \t\r\n") {
+			return fmt.Errorf("apiKeys[%d] must not contain whitespace", i)
+		}
+		if len(key) < minAPIKeyLength {
+			return fmt.Errorf("apiKeys[%d] must be at least %d characters", i, minAPIKeyLength)
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("apiKeys[%d] is duplicated", i)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }

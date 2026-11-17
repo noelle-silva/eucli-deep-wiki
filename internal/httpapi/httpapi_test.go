@@ -12,13 +12,15 @@ import (
 	"eucli-deep-wiki/internal/vault"
 )
 
+const testAPIKey = "0123456789abcdef"
+
 func TestListRepositories(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos"))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d", recorder.Code)
@@ -44,8 +46,7 @@ func TestShowFileReturnsContentAndETag(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md", nil)
-	handler.ServeHTTP(recorder, request)
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md"))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -67,11 +68,11 @@ func TestShowFileHonoursIfNoneMatch(t *testing.T) {
 	handler := newTestRouter(t)
 
 	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md", nil))
+	handler.ServeHTTP(first, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md"))
 	etag := first.Header().Get("ETag")
 
 	second := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md", nil)
+	request := authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md")
 	request.Header.Set("If-None-Match", etag)
 	handler.ServeHTTP(second, request)
 
@@ -89,7 +90,7 @@ func TestShowFileRejectsMissingPath(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/example/file", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file"))
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", recorder.Code)
@@ -102,7 +103,7 @@ func TestShowFileRejectsTraversal(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/example/file?path=../secret.txt", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=../secret.txt"))
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
@@ -115,7 +116,7 @@ func TestShowFileReportsUnknownRepository(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/nope/file?path=README.md", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/nope/file?path=README.md"))
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", recorder.Code)
@@ -128,7 +129,7 @@ func TestSearchRequiresQuery(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/example/search", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/search"))
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
@@ -141,7 +142,7 @@ func TestSearchFindsMatches(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/example/search?q=two", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/search?q=two"))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -162,7 +163,7 @@ func TestTreeListsEntries(t *testing.T) {
 	handler := newTestRouter(t)
 
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/repos/example/tree?path=docs", nil))
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/tree?path=docs"))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -177,7 +178,94 @@ func TestTreeListsEntries(t *testing.T) {
 	}
 }
 
+func TestProtectedEndpointsRequireKey(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	for _, target := range []string{
+		"/status",
+		"/v1/repos",
+		"/v1/repos/example",
+		"/v1/repos/example/tree",
+		"/v1/repos/example/file?path=docs/guide.md",
+		"/v1/repos/example/search?q=two",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want 401", target, recorder.Code)
+		}
+		if recorder.Header().Get("WWW-Authenticate") == "" {
+			t.Fatalf("%s 缺少 WWW-Authenticate", target)
+		}
+	}
+}
+
+func TestProtectedEndpointsRejectWrongKey(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/repos", nil)
+	request.Header.Set("Authorization", "Bearer wrong-key-000000")
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestProtectedEndpointsAcceptSecondKey(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouterWithKeys(t, []string{testAPIKey, "fedcba9876543210"})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/repos", nil)
+	request.Header.Set("Authorization", "Bearer fedcba9876543210")
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+}
+
+func TestHealthzStaysPublic(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+}
+
+func TestNewAuthenticatorRejectsEmptyKeys(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewAuthenticator(nil); err == nil {
+		t.Fatal("NewAuthenticator() error = nil, want error")
+	}
+}
+
+func authorized(method string, target string) *http.Request {
+	request := httptest.NewRequest(method, target, nil)
+	request.Header.Set("Authorization", "Bearer "+testAPIKey)
+	return request
+}
+
 func newTestRouter(t *testing.T) http.Handler {
+	t.Helper()
+	return newTestRouterWithKeys(t, []string{testAPIKey})
+}
+
+func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
 	t.Helper()
 
 	root := t.TempDir()
@@ -190,7 +278,12 @@ func newTestRouter(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("vault.New() error = %v", err)
 	}
-	return NewRouter(status.NewStore(), repoVault)
+
+	auth, err := NewAuthenticator(keys)
+	if err != nil {
+		t.Fatalf("NewAuthenticator() error = %v", err)
+	}
+	return NewRouter(status.NewStore(), repoVault, auth)
 }
 
 func writeFile(t *testing.T, dir string, name string, content string) {

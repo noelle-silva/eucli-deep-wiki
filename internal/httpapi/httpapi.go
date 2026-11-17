@@ -14,17 +14,19 @@ type StatusStore interface {
 }
 
 // NewRouter 组装全部 HTTP 接口。
-func NewRouter(store StatusStore, repoVault *vault.Vault) http.Handler {
+// 健康检查保持匿名，其余接口都需要 Authorization: Bearer <key>。
+func NewRouter(store StatusStore, repoVault *vault.Vault, auth *Authenticator) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", health)
-	mux.HandleFunc("GET /status", statusHandler(store))
 
-	mux.HandleFunc("GET /v1/repos", listRepositories(repoVault))
-	mux.HandleFunc("GET /v1/repos/{name}", showRepository(repoVault))
-	mux.HandleFunc("GET /v1/repos/{name}/tree", showTree(repoVault))
-	mux.HandleFunc("GET /v1/repos/{name}/file", showFile(repoVault))
-	mux.HandleFunc("GET /v1/repos/{name}/search", searchRepository(repoVault))
+	mux.Handle("GET /status", auth.Wrap(http.HandlerFunc(statusHandler(store))))
+
+	mux.Handle("GET /v1/repos", auth.Wrap(listRepositories(repoVault)))
+	mux.Handle("GET /v1/repos/{name}", auth.Wrap(showRepository(repoVault)))
+	mux.Handle("GET /v1/repos/{name}/tree", auth.Wrap(showTree(repoVault)))
+	mux.Handle("GET /v1/repos/{name}/file", auth.Wrap(showFile(repoVault)))
+	mux.Handle("GET /v1/repos/{name}/search", auth.Wrap(searchRepository(repoVault)))
 
 	return mux
 }
