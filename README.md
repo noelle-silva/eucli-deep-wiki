@@ -14,7 +14,7 @@
 
 ```text
 源码仓库                            部署目录（示例）
-├── cmd/                            E:\TOOOOOLSbox\eucli-deep-wiki-deploy\
+├── cmd/                            D:\eucli-deploy\
 ├── internal/                       ├── config\config.json
 ├── Dockerfile                      └── data\
 ├── docker-compose.yml                  ├── repositories.json
@@ -34,7 +34,7 @@
 配置文件分两处使用，内容只差在路径上：
 
 - 容器内：`dataRoot` 填挂载点 `/app/data`，`httpAddress` 填 `0.0.0.0:9997`。
-- 宿主机直接跑二进制：`dataRoot` 填绝对路径，例如 `E:/TOOOOOLSbox/eucli-deep-wiki-deploy/data`。
+- 宿主机直接跑二进制：`dataRoot` 填绝对路径，例如 `D:/eucli-deploy/data`。
 
 `dataRoot` 支持绝对路径，也支持单层相对名字（按启动时的工作目录解析）；`repositoryRoot` 与 `repositoryIndex` 始终是单层名字，挂在 `dataRoot` 之下。
 

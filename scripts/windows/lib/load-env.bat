@@ -20,6 +20,8 @@ for %%V in (EUCLI_DEPLOY_DIR EUCLI_EXE EUCLI_CONFIG EUCLI_LOG_DIR EUCLI_LOG_FILE
 if not defined EUCLI_SERVICE_NAME set "EUCLI_SERVICE_NAME=eucli-deep-wiki"
 
 set "EXE_PATH=%EUCLI_DEPLOY_DIR%\%EUCLI_EXE%"
+rem EUCLI_EXE 可以直接写绝对路径，用于把程序集中放在统一工具目录。
+if exist "%EUCLI_EXE%" set "EXE_PATH=%EUCLI_EXE%"
 if not exist "%EXE_PATH%" (
     echo [eucli] 找不到二进制: %EXE_PATH%
     exit /b 1

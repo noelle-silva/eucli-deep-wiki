@@ -33,16 +33,24 @@ func (f *clientFlags) register(flags *flag.FlagSet, withJSON bool) {
 	flags.IntVar(&f.timeout, "timeout", 0, "请求超时秒数，0 表示使用默认值")
 }
 
-// defaultServiceConfig 优先使用可执行文件同级的部署配置，
-// 这样在部署目录里直接运行不必带参数；开发时再回退到仓库内路径。
+// defaultServiceConfig 依次尝试：可执行文件同级的部署配置、当前目录的
+// config/ 与 configs/。这样从部署目录或从仓库根目录运行都能找到配置。
 func defaultServiceConfig() string {
+	candidates := make([]string, 0, 3)
 	if executable, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(executable), "config", "config.json")
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config", "config.json"))
+	}
+	candidates = append(candidates,
+		filepath.Join("config", "config.json"),
+		filepath.Join("configs", "config.json"),
+	)
+
+	for _, candidate := range candidates {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
 	}
-	return "configs/config.json"
+	return candidates[len(candidates)-1]
 }
 
 // reportError 输出错误；带 --json 时给出结构化错误，便于程序判断。

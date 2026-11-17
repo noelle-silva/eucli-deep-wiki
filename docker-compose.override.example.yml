@@ -12,7 +12,7 @@ services:
   reference-sync:
     # 附加挂载：把宿主机的日志目录挂进容器
     # volumes:
-    #   - "E:/TOOOOOLSbox/eucli-deep-wiki-deploy/logs:/app/logs"
+    #   - "D:/eucli-deploy/logs:/app/logs"
 
     # 资源上限：参考仓库体积大时按机器情况收紧
     # deploy:
