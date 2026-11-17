@@ -8,4 +8,4 @@ rem 这样进程生命周期与任务状态一致，日志也不会丢。
 call "%~dp0lib\load-env.bat"
 if errorlevel 1 exit /b 1
 
-"%EXE_PATH%" -config "%CFG_PATH%" >> "%LOG_FILE%" 2>&1
+"%EXE_PATH%" serve --service-config "%CFG_PATH%" >> "%LOG_FILE%" 2>&1

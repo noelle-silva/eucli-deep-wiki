@@ -64,8 +64,8 @@ docker compose down
 ## 直接跑二进制
 
 ```sh
-go run ./cmd/reference-sync -config <配置文件路径>   # 长期运行
-go run ./cmd/reference-sync -config <配置文件路径> -once   # 只同步一轮
+go run ./cmd/eucli-dw serve --service-config <配置文件路径>          # 长期运行
+go run ./cmd/eucli-dw serve --service-config <配置文件路径> --once   # 只同步一轮
 ```
 
 ## Windows 启动脚本
@@ -204,6 +204,56 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 | 检索词为空 | `400 query_required` |
 
 所有路径都经 `os.Root` 收敛，符号链接无法把访问带出仓库；目录树与检索都会跳过 `.git`。
+
+## 命令行工具
+
+整个项目的产物只有一个二进制 `eucli-dw`，服务与查询都走它。
+
+```sh
+eucli-dw serve [--service-config 路径] [--http-address 地址] [--once]
+eucli-dw repo add [--service-config 路径] <git-url>...
+eucli-dw repo list [--service-config 路径] [--json]
+
+eucli-dw get [参数] <仓库> <路径>
+eucli-dw tree [参数] <仓库> [目录]
+eucli-dw search [参数] <仓库> <关键词>
+
+eucli-dw config set server <url>
+eucli-dw config set key <key>
+eucli-dw config show [--json]
+eucli-dw config path
+```
+
+**本地命令**（`serve`、`repo`）直接操作部署目录，只需 `--service-config`；**查询命令**只走网络，不读本地仓库。
+
+查询命令的连接信息按以下顺序确定：
+
+```text
+--server / --key 参数  →  客户端配置文件  →  报错并提示如何配置
+```
+
+客户端配置文件的查找顺序：
+
+```text
+--config 参数
+EUCLI_DW_CONFIG 环境变量（可以指向目录）
+Windows: %USERPROFILE%\.eucli-dw\config.json
+Linux:   $XDG_CONFIG_HOME/eucli-dw/config.json → ~/.config/eucli-dw/config.json
+```
+
+工具只认这套平台默认值，本机要把配置放到别处（例如统一的工具目录）时，用 `EUCLI_DW_CONFIG` 指过去即可，无需改代码。
+
+```sh
+eucli-dw config set server http://127.0.0.1:9997
+eucli-dw config set key 0123456789abcdef
+
+eucli-dw get claw-code README.md
+eucli-dw tree claw-code docs
+eucli-dw search claw-code subagent --limit 5
+eucli-dw get claw-code README.md --json     # 带提交号的 JSON
+```
+
+`config show` 只显示 key 的首尾各四位；查询命令都支持把参数写在位置参数之后，也支持 `--json` 输出原始结构，便于脚本与 Agent 消费。
 
 ## 开发资料目录
 

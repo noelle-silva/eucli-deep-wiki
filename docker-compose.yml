@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: eucli-deep-wiki:latest
-    command: ["-config", "/app/config.json"]
+    command: ["serve", "--service-config", "/app/config.json"]
     ports:
       - "${EUCLI_BIND_ADDRESS:-127.0.0.1:9997}:9997"
     volumes:

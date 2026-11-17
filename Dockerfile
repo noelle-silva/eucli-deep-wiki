@@ -6,8 +6,7 @@ COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 
-RUN go build -o /out/reference-sync ./cmd/reference-sync \
-    && go build -o /out/reference-add ./cmd/reference-add
+RUN go build -o /out/eucli-dw ./cmd/eucli-dw
 
 FROM alpine:3.22
 
@@ -17,10 +16,9 @@ RUN apk add --no-cache ca-certificates git openssh-client tzdata \
 
 WORKDIR /app
 
-COPY --from=build /out/reference-sync /usr/local/bin/reference-sync
-COPY --from=build /out/reference-add /usr/local/bin/reference-add
+COPY --from=build /out/eucli-dw /usr/local/bin/eucli-dw
 
 EXPOSE 9997
 
-ENTRYPOINT ["reference-sync"]
-CMD ["-config", "/app/config.json"]
+ENTRYPOINT ["eucli-dw"]
+CMD ["serve", "--service-config", "/app/config.json"]

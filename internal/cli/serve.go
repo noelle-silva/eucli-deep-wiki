@@ -1,9 +1,10 @@
-package main
+package cli
 
 import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,39 +21,51 @@ import (
 	"eucli-deep-wiki/internal/vault"
 )
 
-func main() {
-	configPath := flag.String("config", "configs/config.json", "path to the server config")
-	httpAddress := flag.String("http-address", "", "override the status server listen address")
-	once := flag.Bool("once", false, "run one sync and exit")
-	flag.Parse()
+// runServe 启动同步与查询服务。
+func runServe(args []string, stderr io.Writer) int {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
 
-	cfg, err := config.Load(*configPath)
+	serviceConfig := flags.String("service-config", "configs/config.json", "服务配置文件路径")
+	httpAddress := flags.String("http-address", "", "覆盖监听地址")
+	once := flags.Bool("once", false, "只同步一轮后退出")
+
+	if err := parseArgs(flags, args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.Load(*serviceConfig)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Printf("load config: %v", err)
+		return 1
 	}
 	if *httpAddress != "" {
 		if err := cfg.SetHTTPAddress(*httpAddress); err != nil {
-			log.Fatalf("set http address: %v", err)
+			log.Printf("set http address: %v", err)
+			return 1
 		}
 	}
 
 	index, err := repoindex.Load(cfg.RepositoryIndexPath())
 	if err != nil {
-		log.Fatalf("load repository index: %v", err)
+		log.Printf("load repository index: %v", err)
+		return 1
 	}
 
 	names := make([]string, 0, len(index.Repositories))
-	for _, repo := range index.Repositories {
-		names = append(names, repo.Name)
+	for _, repository := range index.Repositories {
+		names = append(names, repository.Name)
 	}
 	repoVault, err := vault.New(cfg.RepositoryDir(), names, vault.DefaultLimits())
 	if err != nil {
-		log.Fatalf("build read vault: %v", err)
+		log.Printf("build read vault: %v", err)
+		return 1
 	}
 
 	auth, err := httpapi.NewAuthenticator(cfg.APIKeys)
 	if err != nil {
-		log.Fatalf("build authenticator: %v", err)
+		log.Printf("build authenticator: %v", err)
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,13 +73,14 @@ func main() {
 
 	store := status.NewStore()
 	git := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
-	run := runner.New(cfg, index.Repositories, git, store)
+	syncer := runner.New(cfg, index.Repositories, git, store)
 
 	if *once {
-		if err := run.SyncOnce(ctx); err != nil {
-			log.Fatalf("sync repositories: %v", err)
+		if err := syncer.SyncOnce(ctx); err != nil {
+			log.Printf("sync repositories: %v", err)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	server := &http.Server{
@@ -76,19 +90,20 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("status server listening on http://%s", cfg.HTTPAddress)
+		log.Printf("server listening on http://%s", cfg.HTTPAddress)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("status server stopped: %v", err)
+			log.Printf("server stopped: %v", err)
 			stop()
 		}
 	}()
 
-	go run.Loop(ctx)
+	go syncer.Loop(ctx)
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("status server shutdown: %v", err)
+		log.Printf("server shutdown: %v", err)
 	}
+	return 0
 }
