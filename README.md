@@ -103,6 +103,36 @@ cp scripts/windows/deploy.env.example scripts/windows/deploy.env
 
 重复执行会被判重拦下，输出 `已在运行，跳过启动`。
 
+## 注册为开机任务或系统服务
+
+不想依赖登录与快捷方式时，用同一个入口注册：
+
+```sh
+service.bat install schtasks            # 开机以 SYSTEM 运行（管理员）
+service.bat install schtasks --user     # 登录时以当前用户运行（同样需要管理员）
+service.bat install nssm                # 注册为 Windows 服务，需已安装 nssm
+service.bat uninstall schtasks          # 移除任务，幂等
+service.bat uninstall nssm              # 移除服务，幂等
+service.bat status                      # 查看注册与运行状态
+```
+
+脚本结构：
+
+```text
+scripts/windows/
+├── service.bat          入口：校验参数、分发路线
+├── lib/load-env.bat     公共：读取并校验 deploy.env
+├── impl/schtasks.bat    路线一：任务计划程序
+├── impl/nssm.bat        路线二：NSSM 包装成服务
+└── run-foreground.bat   执行体：前台运行并落日志，供上面两条路线复用
+```
+
+两条路线共用同一份取值校验，只在注册命令上分叉。执行体统一是 `run-foreground.bat`，因此进程生命周期与任务或服务的状态一致，日志也不会丢。
+
+`onstart` 与 `onlogon` 触发器都要求管理员权限，`--user` 只改变运行身份。以 SYSTEM 运行时任务不依赖任何用户登录。
+
+`nssm` 路线额外设置了 `AppExit Default Restart`，进程崩溃会被自动拉起；`deploy.env` 里的 `EUCLI_NSSM` 可指定 `nssm.exe` 位置，留空则从 PATH 查找。
+
 ## 仓库索引
 
 `repositories.json` 记录参考仓库名单，位于 `dataRoot` 之下。可以直接用 Git 链接追加，工具会从链接末尾推导本地目录名，并在写入前统一校验：
