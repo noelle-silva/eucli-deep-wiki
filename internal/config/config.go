@@ -126,7 +126,7 @@ func (c *Config) validate() error {
 	if c.GitCommandTimeoutDuration <= 0 {
 		return errors.New("gitCommandTimeout must be greater than zero")
 	}
-	if err := validateLocalName(c.DataRoot, "dataRoot"); err != nil {
+	if err := validateDataRoot(c.DataRoot); err != nil {
 		return err
 	}
 	if err := validateLocalName(c.RepositoryRoot, "repositoryRoot"); err != nil {
@@ -139,6 +139,21 @@ func (c *Config) validate() error {
 		return err
 	}
 	return nil
+}
+
+// validateDataRoot 允许绝对路径，也允许单层相对名字。
+// 绝对路径用于把运行数据放到源码目录之外；相对名字按启动时的工作目录解析。
+func validateDataRoot(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("dataRoot is required")
+	}
+	if strings.TrimSpace(value) != value {
+		return errors.New("dataRoot must not have surrounding whitespace")
+	}
+	if filepath.IsAbs(value) {
+		return nil
+	}
+	return validateLocalName(value, "dataRoot")
 }
 
 // validateLocalName 要求字段是单层名字，避免配置把数据写到工作区之外。

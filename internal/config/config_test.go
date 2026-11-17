@@ -54,6 +54,24 @@ func TestDerivedPathsResolveUnderDataRoot(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsAbsoluteDataRoot(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "eucli-data")
+	path := writeConfig(t, `{"dataRoot": "`+filepath.ToSlash(root)+`"}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.RepositoryDir(), filepath.Join(root, DefaultRepositoryRoot); got != want {
+		t.Fatalf("RepositoryDir() = %q, want %q", got, want)
+	}
+	if got, want := cfg.RepositoryIndexPath(), filepath.Join(root, DefaultRepositoryIndex); got != want {
+		t.Fatalf("RepositoryIndexPath() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadRejectsEscapingDataRoot(t *testing.T) {
 	t.Parallel()
 

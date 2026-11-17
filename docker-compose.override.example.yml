@@ -1,0 +1,35 @@
+# 复制为 docker-compose.override.yml 后按需启用。
+#
+# 分工约定：
+#   取值（路径、监听地址、端口）→ 改 .env
+#   结构（多加挂载、资源限制、附加环境变量）→ 写本文件
+#
+# Compose 只自动合并「与基础文件同目录」的覆盖文件，因此本文件必须与
+# docker-compose.yml 放在一起，改完直接 docker compose up -d 即可。
+# 真实的 docker-compose.override.yml 不参与版本管理。
+
+services:
+  reference-sync:
+    # 附加挂载：把宿主机的日志目录挂进容器
+    # volumes:
+    #   - "E:/TOOOOOLSbox/eucli-deep-wiki-deploy/logs:/app/logs"
+
+    # 资源上限：参考仓库体积大时按机器情况收紧
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2.0"
+    #       memory: 2g
+
+    # 附加环境变量：容器内 git 走代理时需要
+    # environment:
+    #   TZ: Asia/Shanghai
+    #   HTTPS_PROXY: http://host.docker.internal:7890
+
+    # 额外网络：需要被局域网其他机器直接访问时，用独立网络段
+    # networks:
+    #   - lan
+
+# networks:
+#   lan:
+#     driver: bridge

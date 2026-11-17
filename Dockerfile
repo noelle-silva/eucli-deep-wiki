@@ -19,9 +19,8 @@ WORKDIR /app
 
 COPY --from=build /out/reference-sync /usr/local/bin/reference-sync
 COPY --from=build /out/reference-add /usr/local/bin/reference-add
-COPY configs/config.json.example /app/configs/config.json.example
 
 EXPOSE 9997
 
 ENTRYPOINT ["reference-sync"]
-CMD ["-http-address", "0.0.0.0:9997"]
+CMD ["-config", "/app/config.json"]
