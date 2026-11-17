@@ -12,12 +12,13 @@ import (
 func runSync(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sync", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, false)
 	all := flags.Bool("all", false, "同步全部仓库")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 
 	if !*all && flags.NArg() != 1 {

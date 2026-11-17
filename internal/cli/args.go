@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"strings"
 )
 
@@ -41,7 +43,40 @@ func parseArgs(flags *flag.FlagSet, args []string) error {
 		}
 	}
 
-	return flags.Parse(append(options, positional...))
+	err := flags.Parse(append(options, positional...))
+	if errors.Is(err, flag.ErrHelp) {
+		return errHelpRequested
+	}
+	return err
+}
+
+// errHelpRequested 表示用户主动要帮助，不算失败。
+var errHelpRequested = errors.New("help requested")
+
+// parseExitCode 把解析结果换算成退出码。
+func parseExitCode(err error) int {
+	if errors.Is(err, errHelpRequested) {
+		return 0
+	}
+	return 2
+}
+
+// setupHelp 统一子命令的帮助输出。
+func setupHelp(flags *flag.FlagSet, synopsis string) {
+	flags.Usage = func() {
+		fmt.Fprintf(flags.Output(), "用法: %s\n", synopsis)
+		flags.PrintDefaults()
+	}
+}
+
+// wantsHelp 判断参数里是否带有帮助开关。
+func wantsHelp(args []string) bool {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" || arg == "help" {
+			return true
+		}
+	}
+	return false
 }
 
 func isBoolFlag(defined *flag.Flag) bool {

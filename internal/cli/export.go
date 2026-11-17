@@ -13,13 +13,14 @@ import (
 func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("pull", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, false)
 	output := flags.String("o", "", "输出文件路径")
 	format := flags.String("format", "zip", "打包格式：zip 或 tar.gz")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() == 0 {
 		fmt.Fprintln(stderr, "用法: eucli-dw pull <仓库>[:路径] ... [-o 文件] [--format zip|tar.gz]")
@@ -76,12 +77,13 @@ func runPull(args []string, stdout io.Writer, stderr io.Writer) int {
 func runBundle(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("bundle", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, false)
 	output := flags.String("o", "", "输出文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() != 1 {
 		fmt.Fprintln(stderr, "用法: eucli-dw bundle <仓库> [-o 文件]")

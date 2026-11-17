@@ -12,11 +12,12 @@ import (
 func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("get", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, true)
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() < 2 {
 		fmt.Fprintln(stderr, "用法: eucli-dw get [参数] <仓库> <路径>")
@@ -55,11 +56,12 @@ func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("tree", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, true)
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() < 1 {
 		fmt.Fprintln(stderr, "用法: eucli-dw tree [参数] <仓库> [目录]")
@@ -105,12 +107,13 @@ func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("search", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, true)
 	limit := flags.Int("limit", 0, "最多返回多少条命中")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() < 2 {
 		fmt.Fprintln(stderr, "用法: eucli-dw search [参数] <仓库> <关键词>")

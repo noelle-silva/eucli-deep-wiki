@@ -293,6 +293,8 @@ eucli-dw get claw-code README.md --json     # 带提交号的 JSON
 
 `config show` 只显示 key 的首尾各四位；查询命令都支持把参数写在位置参数之后，也支持 `--json` 输出原始结构，便于脚本与 Agent 消费。
 
+任何一层都有帮助：`eucli-dw help`、`eucli-dw repo --help`、`eucli-dw get -h`，退出码统一为 0；未知命令返回 2 并打印用法。
+
 ## 开发资料目录
 
 开发过程中的任务记录、设计决定与工作区约定统一放在 `.dev-management/`，该目录拥有独立的 Git 记录。

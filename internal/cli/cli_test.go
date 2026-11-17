@@ -181,3 +181,41 @@ func TestRepoListReadsIndex(t *testing.T) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
+
+func TestHelpIsAvailableEverywhere(t *testing.T) {
+	t.Parallel()
+
+	cases := [][]string{
+		{"help"},
+		{"--help"},
+		{"repo", "--help"},
+		{"config", "--help"},
+		{"get", "--help"},
+		{"sync", "-h"},
+	}
+
+	for _, args := range cases {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		code := Run(args, stdout, stderr)
+
+		if code != 0 {
+			t.Fatalf("%v code = %d, want 0", args, code)
+		}
+		if stdout.Len() == 0 && stderr.Len() == 0 {
+			t.Fatalf("%v 没有任何帮助输出", args)
+		}
+	}
+}
+
+func TestUnknownSubcommandExplainsUsage(t *testing.T) {
+	t.Parallel()
+
+	stderr := &bytes.Buffer{}
+	if code := Run([]string{"repo", "nope"}, &bytes.Buffer{}, stderr); code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "子命令") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}

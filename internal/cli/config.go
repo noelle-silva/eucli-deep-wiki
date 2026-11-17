@@ -12,9 +12,12 @@ import (
 
 // runConfig 处理 config 子命令组。
 func runConfig(args []string, stdout io.Writer, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "用法: eucli-dw config <set|show|path> [参数]")
-		return 2
+	if len(args) == 0 || wantsHelp(args[:1]) {
+		printConfigUsage(stdout)
+		if len(args) == 0 {
+			return 2
+		}
+		return 0
 	}
 
 	switch args[0] {
@@ -26,17 +29,30 @@ func runConfig(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runConfigPath(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "未知 config 子命令: %s\n", args[0])
+		printConfigUsage(stderr)
 		return 2
 	}
+}
+
+func printConfigUsage(out io.Writer) {
+	fmt.Fprint(out, `用法: eucli-dw config <子命令> [参数]
+
+子命令:
+  set server <url>   设置服务地址
+  set key <key>      设置 key
+  show               查看当前配置（key 打码）
+  path               打印配置文件位置
+`)
 }
 
 func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("config set", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	configPath := flags.String("config", "", "客户端配置文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 	if flags.NArg() < 2 {
 		fmt.Fprintln(stderr, "用法: eucli-dw config set <server|key> <值>")
@@ -95,11 +111,12 @@ func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
 func runConfigShow(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("config show", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	configPath := flags.String("config", "", "客户端配置文件路径")
 	asJSON := flags.Bool("json", false, "输出原始 JSON")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 
 	path, err := settings.ResolvePath(*configPath)
@@ -138,10 +155,11 @@ func runConfigShow(args []string, stdout io.Writer, stderr io.Writer) int {
 func runConfigPath(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("config path", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	configPath := flags.String("config", "", "客户端配置文件路径")
 
 	if err := parseArgs(flags, args); err != nil {
-		return 2
+		return parseExitCode(err)
 	}
 
 	path, err := settings.ResolvePath(*configPath)
