@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"eucli-deep-wiki/internal/status"
 	"eucli-deep-wiki/internal/vault"
@@ -283,7 +284,13 @@ func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
 	if err != nil {
 		t.Fatalf("NewAuthenticator() error = %v", err)
 	}
-	return NewRouter(status.NewStore(), repoVault, auth)
+	return NewRouter(Options{
+		Store:      status.NewStore(),
+		Vault:      repoVault,
+		Auth:       auth,
+		CacheDir:   t.TempDir(),
+		GitTimeout: 30 * time.Second,
+	})
 }
 
 func writeFile(t *testing.T, dir string, name string, content string) {

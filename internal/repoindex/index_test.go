@@ -185,3 +185,31 @@ func writeIndex(t *testing.T, data string) string {
 	}
 	return path
 }
+
+func TestLoadRejectsUnknownHistoryMode(t *testing.T) {
+	t.Parallel()
+
+	path := writeIndex(t, `{
+		"repositories": [
+			{"name": "example", "url": "https://github.com/example/example.git", "history": "partial"}
+		]
+	}`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want unknown history error")
+	}
+}
+
+func TestEffectiveHistoryFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	plain := Repository{Name: "a"}
+	if got := plain.EffectiveHistory("shallow"); got != HistoryShallow {
+		t.Fatalf("EffectiveHistory() = %q", got)
+	}
+
+	declared := Repository{Name: "b", History: HistoryFull}
+	if got := declared.EffectiveHistory(HistoryShallow); got != HistoryFull {
+		t.Fatalf("EffectiveHistory() = %q", got)
+	}
+}

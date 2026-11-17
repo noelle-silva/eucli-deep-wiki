@@ -26,6 +26,8 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   get [参数] <仓库> <路径>        读取文件内容
   tree [参数] <仓库> [目录]       列出目录
   search [参数] <仓库> <关键词>   在仓库内检索
+  pull <仓库>[:路径] ... [-o 文件]  下载快照包（zip / tar.gz）
+  bundle <仓库> [-o 文件]         下载带历史的 bundle
 
 配置命令:
   config set server <url>         设置服务地址
@@ -70,6 +72,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runTree(rest, stdout, stderr)
 	case "search":
 		return runSearch(rest, stdout, stderr)
+	case "pull":
+		return runPull(rest, stdout, stderr)
+	case "bundle":
+		return runBundle(rest, stdout, stderr)
 	case "config":
 		return runConfig(rest, stdout, stderr)
 	default:

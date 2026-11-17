@@ -47,6 +47,14 @@
 | `gitCommandTimeout` | 单条 git 命令超时 | `20m` |
 | `maxParallelSyncs` | 并行同步数量 | `1` |
 | `httpAddress` | 状态服务监听地址 | `127.0.0.1:9997` |
+| `defaultHistory` | 默认历史档位：`shallow` / `full` | `shallow` |
+| `gcThresholdMB` | `.git` 达到多少 MB 才考虑压缩 | `2048` |
+| `gcGrowthMB` | 距上次压缩增长多少 MB 才真的压 | `300` |
+| `sizeLimitMB` | `.git` 超过多少 MB 停止同步 | `5120` |
+
+历史档位：`shallow` 只保留最新一个提交（默认，`.git` 很小），`full` 保留完整历史。单个仓库可以在索引里用 `"history"` 字段覆盖全局默认。
+
+体积保护：同步完成后检查 `.git` 体积。达到 `gcThresholdMB` 且比上次压缩后增长超过 `gcGrowthMB` 时跑一次 `git gc` 并记录新基准；超过 `sizeLimitMB` 则停止该仓库的自动同步，标记为 `BLOCKED`，人工处理后再 `repo unblock` 恢复。
 
 ## 用容器部署
 
@@ -176,6 +184,16 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 | `GET /v1/repos/{name}/tree?path=` | 目录树，目录优先，隐藏 `.git` |
 | `GET /v1/repos/{name}/file?path=` | 读取文本文件 |
 | `GET /v1/repos/{name}/search?q=&limit=` | 按行子串检索 |
+| `GET /v1/repos/{name}/archive?path=&path=` | 快照打包，`path` 可重复，留空为整仓 |
+| `GET /v1/archive?include=仓库:路径&include=…` | 跨仓库或多目标打包 |
+| `GET /v1/repos/{name}/bundle` | 带完整历史的 `git bundle` |
+
+打包默认输出 zip，加 `format=tar.gz` 可换格式；归档不包含 `.git`，总量上限 512 MiB、条目上限两万。bundle 按提交号缓存在 `dataRoot/cache` 下，同一提交只生成一次。
+
+```sh
+eucli-dw pull <仓库>[:路径] ... -o bundle.zip     # 快照
+eucli-dw bundle <仓库> -o repo.bundle            # 带历史
+```
 
 ```sh
 curl http://127.0.0.1:9997/v1/repos
@@ -213,10 +231,13 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 eucli-dw serve [--service-config 路径] [--http-address 地址] [--once]
 eucli-dw repo add [--service-config 路径] <git-url>...
 eucli-dw repo list [--service-config 路径] [--json]
+eucli-dw repo unblock [--service-config 路径] <仓库>
 
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
 eucli-dw search [参数] <仓库> <关键词>
+eucli-dw pull <仓库>[:路径] ... [-o 文件]
+eucli-dw bundle <仓库> [-o 文件]
 
 eucli-dw config set server <url>
 eucli-dw config set key <key>

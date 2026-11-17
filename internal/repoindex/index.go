@@ -17,9 +17,27 @@ import (
 
 // Repository 是一条参考仓库记录。
 type Repository struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Branch string `json:"branch,omitempty"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Branch  string `json:"branch,omitempty"`
+	History string `json:"history,omitempty"`
+}
+
+// 允许的历史档位。
+const (
+	HistoryShallow = "shallow"
+	HistoryFull    = "full"
+)
+
+// EffectiveHistory 返回该仓库实际采用的历史档位。
+func (r Repository) EffectiveHistory(defaultMode string) string {
+	if r.History != "" {
+		return r.History
+	}
+	if defaultMode != "" {
+		return defaultMode
+	}
+	return HistoryShallow
 }
 
 // Index 是仓库清单的持久化形态。
@@ -166,6 +184,12 @@ func validateRepository(repo Repository) error {
 	}
 	if strings.ContainsAny(repo.Branch, " \t\r\n") {
 		return fmt.Errorf("branch %q must not contain whitespace", repo.Branch)
+	}
+
+	switch repo.History {
+	case "", HistoryShallow, HistoryFull:
+	default:
+		return fmt.Errorf("history %q must be %q or %q", repo.History, HistoryShallow, HistoryFull)
 	}
 	return nil
 }

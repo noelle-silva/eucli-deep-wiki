@@ -52,8 +52,9 @@ func DefaultLimits() Limits {
 
 // Vault 把仓库名映射到受控目录。
 type Vault struct {
-	repos  map[string]string
-	limits Limits
+	repos         map[string]string
+	limits        Limits
+	archiveLimits ArchiveLimits
 }
 
 // New 基于参考仓库根目录与索引里的仓库名构建只读视图。
@@ -67,7 +68,7 @@ func New(rootDir string, names []string, limits Limits) (*Vault, error) {
 	for _, name := range names {
 		repos[name] = filepath.Join(absRoot, name)
 	}
-	return &Vault{repos: repos, limits: limits}, nil
+	return &Vault{repos: repos, limits: limits, archiveLimits: DefaultArchiveLimits()}, nil
 }
 
 // Repositories 返回已登记的仓库名，按字典序排列。
@@ -100,6 +101,15 @@ func (v *Vault) Meta(name string) (Meta, error) {
 
 	branch, revision := readHead(dir)
 	return Meta{Name: name, Branch: branch, Revision: revision}, nil
+}
+
+// RepositoryDir 返回仓库在磁盘上的目录，仅供服务内部使用。
+func (v *Vault) RepositoryDir(name string) (string, error) {
+	dir, ok := v.repos[name]
+	if !ok {
+		return "", ErrRepoNotFound
+	}
+	return dir, nil
 }
 
 // open 返回受限于仓库目录的句柄，调用方负责关闭。

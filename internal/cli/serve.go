@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"eucli-deep-wiki/internal/httpapi"
 	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/runner"
+	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
 	"eucli-deep-wiki/internal/vault"
 )
@@ -71,9 +73,15 @@ func runServe(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	guard, err := state.Open(filepath.Join(cfg.DataRoot, state.FileName))
+	if err != nil {
+		log.Printf("load sync state: %v", err)
+		return 1
+	}
+
 	store := status.NewStore()
 	git := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
-	syncer := runner.New(cfg, index.Repositories, git, store)
+	syncer := runner.New(cfg, index.Repositories, git, store, guard)
 
 	if *once {
 		if err := syncer.SyncOnce(ctx); err != nil {
@@ -84,8 +92,14 @@ func runServe(args []string, stderr io.Writer) int {
 	}
 
 	server := &http.Server{
-		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(store, repoVault, auth),
+		Addr: cfg.HTTPAddress,
+		Handler: httpapi.NewRouter(httpapi.Options{
+			Store:      store,
+			Vault:      repoVault,
+			Auth:       auth,
+			CacheDir:   filepath.Join(cfg.DataRoot, "cache"),
+			GitTimeout: cfg.GitCommandTimeoutDuration,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

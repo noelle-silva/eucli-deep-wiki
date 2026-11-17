@@ -30,6 +30,19 @@ const (
 	DefaultGitCommandTimeout = "20m"
 	DefaultMaxParallelSyncs  = 1
 	DefaultHTTPAddress       = "127.0.0.1:9997"
+
+	// DefaultHistoryMode 是未在索引里声明历史档位时采用的模式。
+	DefaultHistoryMode = "shallow"
+	// 体积保护阈值，单位 MB。
+	DefaultGCThresholdMB = 2048
+	DefaultGCGrowthMB    = 300
+	DefaultSizeLimitMB   = 5120
+)
+
+// 历史档位。
+const (
+	HistoryShallow = "shallow"
+	HistoryFull    = "full"
 )
 
 // Config 描述服务的运行形态。
@@ -42,6 +55,11 @@ type Config struct {
 	MaxParallelSyncs  int      `json:"maxParallelSyncs"`
 	HTTPAddress       string   `json:"httpAddress"`
 	APIKeys           []string `json:"apiKeys"`
+
+	DefaultHistory string `json:"defaultHistory"`
+	GCThresholdMB  int    `json:"gcThresholdMB"`
+	GCGrowthMB     int    `json:"gcGrowthMB"`
+	SizeLimitMB    int    `json:"sizeLimitMB"`
 
 	SyncIntervalDuration      time.Duration `json:"-"`
 	GitCommandTimeoutDuration time.Duration `json:"-"`
@@ -106,6 +124,18 @@ func (c *Config) applyDefaults() error {
 	if c.MaxParallelSyncs <= 0 {
 		c.MaxParallelSyncs = DefaultMaxParallelSyncs
 	}
+	if strings.TrimSpace(c.DefaultHistory) == "" {
+		c.DefaultHistory = DefaultHistoryMode
+	}
+	if c.GCThresholdMB <= 0 {
+		c.GCThresholdMB = DefaultGCThresholdMB
+	}
+	if c.GCGrowthMB <= 0 {
+		c.GCGrowthMB = DefaultGCGrowthMB
+	}
+	if c.SizeLimitMB <= 0 {
+		c.SizeLimitMB = DefaultSizeLimitMB
+	}
 	if strings.TrimSpace(c.HTTPAddress) == "" {
 		c.HTTPAddress = DefaultHTTPAddress
 	}
@@ -143,6 +173,9 @@ func (c *Config) validate() error {
 	}
 	if err := validateHTTPAddress(c.HTTPAddress); err != nil {
 		return err
+	}
+	if c.DefaultHistory != HistoryShallow && c.DefaultHistory != HistoryFull {
+		return fmt.Errorf("defaultHistory must be %q or %q", HistoryShallow, HistoryFull)
 	}
 	return validateAPIKeys(c.APIKeys)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -12,11 +13,15 @@ import (
 	"eucli-deep-wiki/internal/config"
 	"eucli-deep-wiki/internal/gitops"
 	"eucli-deep-wiki/internal/repoindex"
+	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
 )
 
+// GitClient 是同步器依赖的 git 能力。
 type GitClient interface {
 	Sync(ctx context.Context, repo gitops.Repository) gitops.Result
+	GarbageCollect(ctx context.Context, path string) error
+	GitDirectorySize(path string) (int64, error)
 }
 
 type Runner struct {
@@ -24,15 +29,17 @@ type Runner struct {
 	repos []repoindex.Repository
 	git   GitClient
 	store *status.Store
+	state *state.Store
 	gate  chan struct{}
 }
 
-func New(cfg *config.Config, repos []repoindex.Repository, git GitClient, store *status.Store) *Runner {
+func New(cfg *config.Config, repos []repoindex.Repository, git GitClient, store *status.Store, guard *state.Store) *Runner {
 	return &Runner{
 		cfg:   cfg,
 		repos: append([]repoindex.Repository(nil), repos...),
 		git:   git,
 		store: store,
+		state: guard,
 		gate:  make(chan struct{}, 1),
 	}
 }
@@ -100,11 +107,7 @@ func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
 		go func() {
 			defer wg.Done()
 			for repo := range jobs {
-				result := r.git.Sync(ctx, gitops.Repository{
-					Name:   repo.Name,
-					URL:    repo.URL,
-					Branch: repo.Branch,
-				})
+				result := r.syncOne(ctx, repo)
 				logResult(result)
 				r.store.AddResult(result)
 				results <- result
@@ -133,6 +136,92 @@ func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
 		collected = append(collected, result)
 	}
 	return collected
+}
+
+// syncOne 处理单个仓库：先看是否被体积保护拦下，再同步，最后守卫体积。
+func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.Result {
+	repoPath := filepath.Join(r.cfg.RepositoryDir(), repo.Name)
+
+	if blocked := r.state.Get(repo.Name); blocked.Blocked {
+		return gitops.Result{
+			Name:       repo.Name,
+			URL:        repo.URL,
+			Path:       repoPath,
+			Action:     "blocked",
+			Error:      fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(blocked.BlockedSize), r.cfg.SizeLimitMB),
+			StartedAt:  time.Now(),
+			FinishedAt: time.Now(),
+		}
+	}
+
+	history := repo.EffectiveHistory(r.cfg.DefaultHistory)
+	result := r.git.Sync(ctx, gitops.Repository{
+		Name:    repo.Name,
+		URL:     repo.URL,
+		Branch:  repo.Branch,
+		Shallow: history != repoindex.HistoryFull,
+	})
+	if result.Error != "" {
+		return result
+	}
+
+	r.applySizeGuard(ctx, repo, repoPath, &result)
+	return result
+}
+
+// applySizeGuard 在同步完成后检查 .git 体积：
+// 超过上限就停机保护，超过压缩线且增长足够则压缩一次并记录基准。
+func (r *Runner) applySizeGuard(ctx context.Context, repo repoindex.Repository, repoPath string, result *gitops.Result) {
+	size, err := r.git.GitDirectorySize(repoPath)
+	if err != nil {
+		log.Printf("repo=%s measure size: %v", repo.Name, err)
+		return
+	}
+
+	limit := int64(r.cfg.SizeLimitMB) << 20
+	if size >= limit {
+		if err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
+			current.Blocked = true
+			current.BlockedAt = time.Now()
+			current.BlockedSize = size
+			return current
+		}); err != nil {
+			log.Printf("repo=%s persist block state: %v", repo.Name, err)
+		}
+		result.Action = "blocked"
+		result.Error = fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(size), r.cfg.SizeLimitMB)
+		return
+	}
+
+	threshold := int64(r.cfg.GCThresholdMB) << 20
+	growth := int64(r.cfg.GCGrowthMB) << 20
+	current := r.state.Get(repo.Name)
+	if size < threshold || size-current.LastGCSize < growth {
+		return
+	}
+
+	log.Printf("repo=%s gc start size=%s", repo.Name, humanMB(size))
+	if err := r.git.GarbageCollect(ctx, repoPath); err != nil {
+		log.Printf("repo=%s gc failed: %v", repo.Name, err)
+		return
+	}
+
+	after, err := r.git.GitDirectorySize(repoPath)
+	if err != nil {
+		after = size
+	}
+	if err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
+		current.LastGCSize = after
+		current.LastGCAt = time.Now()
+		return current
+	}); err != nil {
+		log.Printf("repo=%s persist gc state: %v", repo.Name, err)
+	}
+	log.Printf("repo=%s gc done before=%s after=%s", repo.Name, humanMB(size), humanMB(after))
+}
+
+func humanMB(size int64) string {
+	return fmt.Sprintf("%.0f MB", float64(size)/(1<<20))
 }
 
 func logResult(result gitops.Result) {

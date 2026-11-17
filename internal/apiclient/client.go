@@ -189,6 +189,50 @@ func (c *Client) File(ctx context.Context, name string, target string) (File, er
 	}, nil
 }
 
+// Archive 下载打包好的快照，includes 形如 "仓库" 或 "仓库:路径"。
+func (c *Client) Archive(ctx context.Context, includes []string, format string, w io.Writer) error {
+	values := url.Values{}
+	for _, include := range includes {
+		values.Add("include", include)
+	}
+	if format != "" {
+		values.Set("format", format)
+	}
+	return c.stream(ctx, "/v1/archive", values, w)
+}
+
+// Bundle 下载带完整历史的 bundle 文件。
+func (c *Client) Bundle(ctx context.Context, name string, w io.Writer) error {
+	return c.stream(ctx, "/v1/repos/"+url.PathEscape(name)+"/bundle", nil, w)
+}
+
+func (c *Client) stream(ctx context.Context, path string, query url.Values, w io.Writer) error {
+	endpoint := c.baseURL + path
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		return decodeError(response.StatusCode, body)
+	}
+
+	_, err = io.Copy(w, response.Body)
+	return err
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out any) error {
 	endpoint := c.baseURL + path
 	if len(query) > 0 {

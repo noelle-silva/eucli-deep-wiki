@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"eucli-deep-wiki/internal/status"
 	"eucli-deep-wiki/internal/vault"
@@ -13,20 +14,35 @@ type StatusStore interface {
 	Snapshot() status.Snapshot
 }
 
+// Options 是路由所需的全部依赖。
+type Options struct {
+	Store      StatusStore
+	Vault      *vault.Vault
+	Auth       *Authenticator
+	CacheDir   string
+	GitTimeout time.Duration
+}
+
 // NewRouter 组装全部 HTTP 接口。
 // 健康检查保持匿名，其余接口都需要 Authorization: Bearer <key>。
-func NewRouter(store StatusStore, repoVault *vault.Vault, auth *Authenticator) http.Handler {
+func NewRouter(options Options) http.Handler {
 	mux := http.NewServeMux()
+	shared := &exportState{}
 
 	mux.HandleFunc("GET /healthz", health)
 
-	mux.Handle("GET /status", auth.Wrap(http.HandlerFunc(statusHandler(store))))
+	mux.Handle("GET /status", options.Auth.Wrap(http.HandlerFunc(statusHandler(options.Store))))
 
-	mux.Handle("GET /v1/repos", auth.Wrap(listRepositories(repoVault)))
-	mux.Handle("GET /v1/repos/{name}", auth.Wrap(showRepository(repoVault)))
-	mux.Handle("GET /v1/repos/{name}/tree", auth.Wrap(showTree(repoVault)))
-	mux.Handle("GET /v1/repos/{name}/file", auth.Wrap(showFile(repoVault)))
-	mux.Handle("GET /v1/repos/{name}/search", auth.Wrap(searchRepository(repoVault)))
+	mux.Handle("GET /v1/repos", options.Auth.Wrap(listRepositories(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}", options.Auth.Wrap(showRepository(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/tree", options.Auth.Wrap(showTree(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/file", options.Auth.Wrap(showFile(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/search", options.Auth.Wrap(searchRepository(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/archive", options.Auth.Wrap(showArchive(options.Vault)))
+	mux.Handle("GET /v1/repos/{name}/bundle", options.Auth.Wrap(
+		showBundle(options.Vault, options.CacheDir, options.GitTimeout, shared),
+	))
+	mux.Handle("GET /v1/archive", options.Auth.Wrap(showMultiArchive(options.Vault)))
 
 	return mux
 }

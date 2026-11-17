@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,9 +32,10 @@ const (
 )
 
 type Repository struct {
-	Name   string
-	URL    string
-	Branch string
+	Name    string
+	URL     string
+	Branch  string
+	Shallow bool
 }
 
 type Result struct {
@@ -100,7 +102,7 @@ func (c *Client) sync(ctx context.Context, repo Repository, path string) (string
 		return "", "failed", err
 	}
 
-	state, err := c.inspectTarget(ctx, path, repo.URL)
+	state, err := c.inspectTarget(ctx, path, repo.URL, repo.Shallow)
 	if err != nil {
 		return "", "failed", err
 	}
@@ -132,7 +134,12 @@ func (c *Client) syncReadyTarget(ctx context.Context, repo Repository, path stri
 		return remote.branch, "skipped", nil
 	}
 
-	if _, err := c.runNetwork(ctx, path, "fetch", "--prune", "origin"); err != nil {
+	fetchArgs := []string{"fetch", "--prune"}
+	if repo.Shallow {
+		fetchArgs = append(fetchArgs, "--depth", "1")
+	}
+	fetchArgs = append(fetchArgs, "origin")
+	if _, err := c.runNetwork(ctx, path, fetchArgs...); err != nil {
 		return remote.branch, "fetch failed", err
 	}
 	if err := c.enforceResolvedRemoteState(ctx, path, remote.branch); err != nil {
@@ -142,7 +149,7 @@ func (c *Client) syncReadyTarget(ctx context.Context, repo Repository, path stri
 	return remote.branch, "updated", nil
 }
 
-func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL string) (targetState, error) {
+func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL string, shallow bool) (targetState, error) {
 	stat, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return targetMissing, nil
@@ -174,6 +181,14 @@ func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL str
 		return targetRebuild, nil
 	}
 
+	isShallow, err := c.isShallowRepository(ctx, path)
+	if err != nil {
+		return targetMissing, err
+	}
+	if isShallow != shallow {
+		return targetRebuild, nil
+	}
+
 	matches, err := c.originMatches(ctx, path, expectedURL)
 	if err != nil {
 		return targetMissing, err
@@ -194,7 +209,12 @@ func (c *Client) hasStaleLock(path string) bool {
 }
 
 func (c *Client) cloneAndEnforce(ctx context.Context, repo Repository, path string, successAction string, failureAction string) (string, string, error) {
-	if _, err := c.run(ctx, "", "clone", repo.URL, path); err != nil {
+	cloneArgs := []string{"clone"}
+	if repo.Shallow {
+		cloneArgs = append(cloneArgs, "--depth", "1")
+	}
+	cloneArgs = append(cloneArgs, repo.URL, path)
+	if _, err := c.run(ctx, "", cloneArgs...); err != nil {
 		return "", failureAction, err
 	}
 	branch, err := c.enforceRemoteState(ctx, path, repo.Branch)
@@ -405,6 +425,18 @@ func (c *Client) resolveBranch(ctx context.Context, path string, configuredBranc
 	return branch, nil
 }
 
+// isShallowRepository 判断本地仓库是否是浅克隆。
+func (c *Client) isShallowRepository(ctx context.Context, path string) (bool, error) {
+	out, err := c.run(ctx, path, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		if isCommandControlError(err) || !isGitExitError(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	return strings.TrimSpace(out) == "true", nil
+}
+
 func (c *Client) isGitRepository(ctx context.Context, path string) (bool, error) {
 	out, err := c.run(ctx, path, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
@@ -565,4 +597,44 @@ func gitArgs(args []string) []string {
 	result = append(result, prefix...)
 	result = append(result, args...)
 	return result
+}
+
+// GarbageCollect 合并松散对象并清掉不可达对象，用于控制 .git 体积。
+// 这一步可能比普通命令慢得多，因此单独放宽超时。
+func (c *Client) GarbageCollect(ctx context.Context, path string) error {
+	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout*3)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, "git", gitArgs([]string{"gc", "--prune=now"})...)
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git gc: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// GitDirectorySize 统计 .git 目录占用的字节数。
+func (c *Client) GitDirectorySize(path string) (int64, error) {
+	root := filepath.Join(path, ".git")
+
+	var total int64
+	walkErr := filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	if walkErr != nil {
+		return 0, walkErr
+	}
+	return total, nil
 }
