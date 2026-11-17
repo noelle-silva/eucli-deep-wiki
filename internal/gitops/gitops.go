@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const longPathConfig = "core.longpaths=true"
+const (
+	longPathConfig = "core.longpaths=true"
+	fileModeConfig = "core.filemode=false"
+)
 
 var (
 	errGitCommandTimeout  = errors.New("git command timed out")
@@ -129,7 +132,7 @@ func (c *Client) syncReadyTarget(ctx context.Context, repo Repository, path stri
 		return remote.branch, "skipped", nil
 	}
 
-	if _, err := c.run(ctx, path, "fetch", "--prune", "origin"); err != nil {
+	if _, err := c.runNetwork(ctx, path, "fetch", "--prune", "origin"); err != nil {
 		return remote.branch, "fetch failed", err
 	}
 	if err := c.enforceResolvedRemoteState(ctx, path, remote.branch); err != nil {
@@ -167,6 +170,10 @@ func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL str
 		return targetRebuild, nil
 	}
 
+	if c.hasStaleLock(path) {
+		return targetRebuild, nil
+	}
+
 	matches, err := c.originMatches(ctx, path, expectedURL)
 	if err != nil {
 		return targetMissing, err
@@ -176,6 +183,14 @@ func (c *Client) inspectTarget(ctx context.Context, path string, expectedURL str
 	}
 
 	return targetReady, nil
+}
+
+// hasStaleLock 判断参考仓库里是否残留 git 锁文件。
+// 服务对同一个仓库严格串行同步，残留锁只可能来自上一次异常中断，
+// 这类仓库按不干净处理，直接重建。
+func (c *Client) hasStaleLock(path string) bool {
+	_, err := os.Lstat(filepath.Join(path, ".git", "index.lock"))
+	return err == nil
 }
 
 func (c *Client) cloneAndEnforce(ctx context.Context, repo Repository, path string, successAction string, failureAction string) (string, string, error) {
@@ -248,7 +263,8 @@ func (c *Client) enforceResolvedRemoteState(ctx context.Context, path string, br
 	}
 
 	remoteBranch := "origin/" + branch
-	if _, err := c.run(ctx, path, "checkout", "-B", branch, remoteBranch); err != nil {
+	// -f 直接丢弃本地改动：参考仓库的语义就是镜像远端，安全中止只会让同步卡死。
+	if _, err := c.run(ctx, path, "checkout", "-f", "-B", branch, remoteBranch); err != nil {
 		return err
 	}
 	if err := c.discardLocalState(ctx, path, remoteBranch); err != nil {
@@ -295,7 +311,7 @@ func (c *Client) inspectRemoteHead(ctx context.Context, path string, configuredB
 		return remoteHead{branch: configuredBranch, revision: revision}, err
 	}
 
-	out, err := c.run(ctx, path, "ls-remote", "--symref", "origin", "HEAD")
+	out, err := c.runNetwork(ctx, path, "ls-remote", "--symref", "origin", "HEAD")
 	if err != nil {
 		return remoteHead{}, err
 	}
@@ -330,7 +346,7 @@ func (c *Client) revision(ctx context.Context, path string, ref string) (string,
 }
 
 func (c *Client) remoteBranchRevision(ctx context.Context, path string, branch string) (string, error) {
-	out, err := c.run(ctx, path, "ls-remote", "origin", "refs/heads/"+branch)
+	out, err := c.runNetwork(ctx, path, "ls-remote", "origin", "refs/heads/"+branch)
 	if err != nil {
 		return "", err
 	}
@@ -446,6 +462,68 @@ func isGitExitError(err error) bool {
 	return errors.As(err, &exitError)
 }
 
+// 网络型 git 命令的重试策略：远端偶发断流不该让一个仓库整轮掉线。
+const (
+	networkAttempts    = 3
+	networkBaseBackoff = 300 * time.Millisecond
+)
+
+// permanentNetworkFailures 是重试也不会好转的确定性失败。
+var permanentNetworkFailures = []string{
+	"Authentication failed",
+	"could not read Username",
+	"could not read Password",
+	"Repository not found",
+	"does not appear to be a git repository",
+	"Permission denied",
+	"index.lock",
+	"cannot lock ref",
+}
+
+// runNetwork 用于 clone 之外的网络型命令，遇到瞬时故障按指数退避重试。
+func (c *Client) runNetwork(ctx context.Context, dir string, args ...string) (string, error) {
+	backoff := networkBaseBackoff
+	var output string
+	var lastErr error
+
+	for attempt := 0; attempt < networkAttempts; attempt++ {
+		out, err := c.run(ctx, dir, args...)
+		if err == nil {
+			return out, nil
+		}
+		output, lastErr = out, err
+		if attempt == networkAttempts-1 || !isRetryableNetworkError(err) {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+
+	return output, lastErr
+}
+
+func isRetryableNetworkError(err error) bool {
+	if isCommandControlError(err) || !isGitExitError(err) {
+		return false
+	}
+	return retryableNetworkMessage(err.Error())
+}
+
+// retryableNetworkMessage 判断失败文本是否属于可重试的瞬时网络故障。
+func retryableNetworkMessage(message string) bool {
+	for _, marker := range permanentNetworkFailures {
+		if strings.Contains(message, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) run(ctx context.Context, dir string, args ...string) (string, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
 	defer cancel()
@@ -474,9 +552,17 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 	return text, nil
 }
 
+// gitArgs 为每条命令补上跨平台必需的行为开关。
+// Windows 的 NTFS 不保留可执行位，若不关闭 filemode，仓库会因为权限位差异
+// 长期显示为“有本地改动”，既无法跳过也无法对齐。
 func gitArgs(args []string) []string {
-	result := make([]string, 0, len(args)+2)
-	result = append(result, "-c", longPathConfig)
+	prefix := []string{"-c", longPathConfig}
+	if runtime.GOOS == "windows" {
+		prefix = append(prefix, "-c", fileModeConfig)
+	}
+
+	result := make([]string, 0, len(args)+len(prefix))
+	result = append(result, prefix...)
 	result = append(result, args...)
 	return result
 }

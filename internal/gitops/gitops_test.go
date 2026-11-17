@@ -19,15 +19,85 @@ func TestGitArgsEnablesLongPathsForEveryCommand(t *testing.T) {
 	base := []string{"fetch", "--prune", "origin"}
 	args := gitArgs(base)
 
-	if args[0] != "-c" || args[1] != longPathConfig {
-		t.Fatalf("gitArgs() prefix = %q %q, want -c %s", args[0], args[1], longPathConfig)
+	if !containsPair(args, "-c", longPathConfig) {
+		t.Fatalf("gitArgs() = %v, want -c %s", args, longPathConfig)
 	}
-	if args[2] != "fetch" || args[3] != "--prune" || args[4] != "origin" {
-		t.Fatalf("gitArgs() command args = %v", args[2:])
+	if runtime.GOOS == "windows" && !containsPair(args, "-c", fileModeConfig) {
+		t.Fatalf("gitArgs() = %v, want -c %s on windows", args, fileModeConfig)
+	}
+	if runtime.GOOS != "windows" && containsPair(args, "-c", fileModeConfig) {
+		t.Fatalf("gitArgs() = %v, want no filemode override off windows", args)
+	}
+
+	tail := args[len(args)-len(base):]
+	for i := range base {
+		if tail[i] != base[i] {
+			t.Fatalf("gitArgs() command args = %v, want %v", tail, base)
+		}
 	}
 	if base[0] != "fetch" {
 		t.Fatalf("gitArgs() mutated input: %v", base)
 	}
+}
+
+func containsPair(args []string, flag string, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSyncRecreatesRepositoryWithStaleLock(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	client := New(root, 30*time.Second)
+	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
+
+	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if first.Error != "" {
+		t.Fatalf("first Sync() error = %q", first.Error)
+	}
+
+	target := filepath.Join(root, "example")
+	lockPath := filepath.Join(target, ".git", "index.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	second := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if second.Error != "" {
+		t.Fatalf("second Sync() error = %q", second.Error)
+	}
+	if second.Action != "recreated" {
+		t.Fatalf("second Sync() action = %q, want recreated", second.Action)
+	}
+	assertMissing(t, lockPath)
+	assertFileContent(t, filepath.Join(target, "fresh.txt"), "fresh")
+}
+
+func TestSyncAlignsModeOnlyChanges(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	client := New(root, 30*time.Second)
+	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
+
+	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if first.Error != "" {
+		t.Fatalf("first Sync() error = %q", first.Error)
+	}
+
+	target := filepath.Join(root, "example")
+	runGit(t, target, "update-index", "--chmod=+x", "fresh.txt")
+
+	second := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if second.Error != "" {
+		t.Fatalf("second Sync() error = %q, want mode-only change tolerated", second.Error)
+	}
+	assertFileContent(t, filepath.Join(target, "fresh.txt"), "fresh")
 }
 
 func TestSyncRecreatesNonGitTarget(t *testing.T) {
@@ -183,6 +253,48 @@ func TestSyncRejectsNonDirectoryRoot(t *testing.T) {
 
 	if result.Error == "" {
 		t.Fatal("Sync() error = empty, want non-directory root error")
+	}
+}
+
+func TestRetryableNetworkMessage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{
+			name:    "接收中断",
+			message: "git ls-remote --symref origin HEAD: exit status 128: fatal: unable to access 'https://github.com/x/y.git/': Failure when receiving data from the peer",
+			want:    true,
+		},
+		{
+			name:    "连接被中止",
+			message: "git ls-remote --symref origin HEAD: exit status 128: fatal: unable to access 'https://github.com/x/y.git/': Recv failure: Connection was aborted",
+			want:    true,
+		},
+		{
+			name:    "认证失败",
+			message: "git ls-remote origin: exit status 128: fatal: Authentication failed for 'https://github.com/x/y.git/'",
+			want:    false,
+		},
+		{
+			name:    "仓库不存在",
+			message: "git ls-remote origin: exit status 128: remote: Repository not found.",
+			want:    false,
+		},
+		{
+			name:    "锁冲突",
+			message: "git fetch --prune origin: exit status 128: fatal: Unable to create '/repo/.git/index.lock': File exists.",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		if got := retryableNetworkMessage(tc.message); got != tc.want {
+			t.Errorf("%s: retryableNetworkMessage() = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
