@@ -545,3 +545,29 @@ func assertSortedMatches(t *testing.T, matches []Match) {
 		}
 	}
 }
+
+func TestListingKeepsUnsynchronizedRepository(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	writeRepoFile(t, dir, ".git/HEAD", "ref: refs/heads/main\n")
+	writeRepoFile(t, dir, ".git/refs/heads/main", "0123456789abcdef0123456789abcdef01234567\n")
+
+	v, err := New(root, []string{"example", "fresh"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	listing := v.Listing()
+	if len(listing) != 2 {
+		t.Fatalf("Listing() = %#v, want 2 条", listing)
+	}
+	if listing[0].Name != "example" || listing[0].Branch != "main" {
+		t.Fatalf("listing[0] = %#v", listing[0])
+	}
+	// fresh 只是登记了，还没同步到本地：仍然出现在清单里，只是没有分支与提交号。
+	if listing[1].Name != "fresh" || listing[1].Branch != "" || listing[1].Revision != "" {
+		t.Fatalf("listing[1] = %#v", listing[1])
+	}
+}

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"eucli-deep-wiki/internal/config"
 	"eucli-deep-wiki/internal/gitops"
+	"eucli-deep-wiki/internal/live"
 	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
@@ -25,49 +25,97 @@ type GitClient interface {
 	ProbeRemote(ctx context.Context, url string) error
 }
 
+// Source 提供运行期可替换的配置与仓库清单。
+//
+// 每轮同步只取一次快照：整轮都用同一份配置与清单，重载不会把一轮同步
+// 撕成两半；下一轮自然用上新的一份。
+type Source interface {
+	// EnsureFresh 在配置文件或索引变化时重新加载。
+	EnsureFresh()
+	// Snapshot 返回当前生效的完整视图。
+	Snapshot() live.Snapshot
+	// Changed 返回一个在生效内容变化后关闭的通道。
+	Changed() <-chan struct{}
+}
+
 // 远端连续失败到这一次数后，判定仓库的远端已经消失。
 const remoteMissingThreshold = 3
 
 type Runner struct {
-	cfg   *config.Config
-	repos []repoindex.Repository
-	git   GitClient
-	store *status.Store
-	state *state.Store
-	gate  chan struct{}
+	source Source
+	git    GitClient
+	store  *status.Store
+	state  *state.Store
+	gate   chan struct{}
 }
 
-func New(cfg *config.Config, repos []repoindex.Repository, git GitClient, store *status.Store, guard *state.Store) *Runner {
+func New(source Source, git GitClient, store *status.Store, guard *state.Store) *Runner {
 	return &Runner{
-		cfg:   cfg,
-		repos: append([]repoindex.Repository(nil), repos...),
-		git:   git,
-		store: store,
-		state: guard,
-		gate:  make(chan struct{}, 1),
+		source: source,
+		git:    git,
+		store:  store,
+		state:  guard,
+		gate:   make(chan struct{}, 1),
 	}
 }
 
+// Loop 先同步一轮，之后按当前同步周期循环。
+//
+// 周期来自运行期配置：配置改了会唤醒这里，按新周期重新计时；
+// 与周期无关的变更不会打断已经排好的下一轮。
 func (r *Runner) Loop(ctx context.Context) {
 	if err := r.SyncOnce(ctx); err != nil {
 		log.Printf("initial sync completed with errors: %v", err)
 	}
 
-	ticker := time.NewTicker(r.cfg.SyncIntervalDuration)
-	defer ticker.Stop()
-	r.store.SetNextRun(time.Now().Add(r.cfg.SyncIntervalDuration))
-
 	for {
-		select {
-		case <-ctx.Done():
+		if !r.waitNextRun(ctx) {
 			return
-		case <-ticker.C:
-			r.store.SetNextRun(time.Now().Add(r.cfg.SyncIntervalDuration))
-			if err := r.SyncOnce(ctx); err != nil {
-				log.Printf("scheduled sync completed with errors: %v", err)
-			}
+		}
+		if err := r.SyncOnce(ctx); err != nil {
+			log.Printf("scheduled sync completed with errors: %v", err)
 		}
 	}
+}
+
+// waitNextRun 等到下一轮同步的时间点；周期变化时按新周期重新计时。
+// 返回 false 表示收到退出信号。
+func (r *Runner) waitNextRun(ctx context.Context) bool {
+	interval := r.interval()
+	deadline := time.Now().Add(interval)
+	r.store.SetNextRun(deadline)
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return true
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+			return true
+		case <-r.source.Changed():
+			timer.Stop()
+
+			updated := r.interval()
+			if updated == interval {
+				// 与周期无关的变更：保持原定时间点，不打断已经排好的下一轮。
+				continue
+			}
+			interval = updated
+			deadline = time.Now().Add(interval)
+			r.store.SetNextRun(deadline)
+		}
+	}
+}
+
+// interval 返回当前生效的同步周期。
+func (r *Runner) interval() time.Duration {
+	return r.source.Snapshot().Config.SyncIntervalDuration
 }
 
 func (r *Runner) SyncOnce(ctx context.Context) error {
@@ -108,13 +156,17 @@ func (r *Runner) release() {
 }
 
 func (r *Runner) runCycle(ctx context.Context) error {
+	// 每轮开始前先让配置与索引跟上磁盘：新增的仓库、新的阈值与周期都在这一轮生效。
+	r.source.EnsureFresh()
+	snapshot := r.source.Snapshot()
+
 	startedAt := time.Now()
 	r.reloadState()
-	r.store.Begin(startedAt, len(r.repos))
+	r.store.Begin(startedAt, len(snapshot.Repositories))
 	defer func() { r.store.Finish(time.Now()) }()
 
-	log.Printf("sync started for %d repositories", len(r.repos))
-	results := r.syncAll(ctx)
+	log.Printf("sync started for %d repositories", len(snapshot.Repositories))
+	results := r.syncAll(ctx, snapshot)
 	log.Printf("sync finished for %d repositories", len(results))
 
 	var failures []string
@@ -129,10 +181,12 @@ func (r *Runner) runCycle(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
-	workers := r.cfg.MaxParallelSyncs
-	if workers > len(r.repos) {
-		workers = len(r.repos)
+func (r *Runner) syncAll(ctx context.Context, snapshot live.Snapshot) []gitops.Result {
+	repositories := snapshot.Repositories
+
+	workers := snapshot.Config.MaxParallelSyncs
+	if workers > len(repositories) {
+		workers = len(repositories)
 	}
 
 	jobs := make(chan repoindex.Repository)
@@ -144,7 +198,7 @@ func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
 		go func() {
 			defer wg.Done()
 			for repo := range jobs {
-				result := r.syncOne(ctx, repo)
+				result := r.syncOne(ctx, snapshot, repo)
 				logResult(result)
 				r.store.AddResult(result)
 				results <- result
@@ -153,7 +207,7 @@ func (r *Runner) syncAll(ctx context.Context) []gitops.Result {
 	}
 
 	go func() {
-		for _, repo := range r.repos {
+		for _, repo := range repositories {
 			select {
 			case <-ctx.Done():
 				close(jobs)
@@ -183,7 +237,11 @@ var (
 
 // SyncOne 立刻同步指定仓库，供按需拉取使用。
 func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error) {
-	target, found := r.find(name)
+	// 按需同步同样先跟上磁盘：刚加进索引的仓库可以直接同步，不用等下一轮。
+	r.source.EnsureFresh()
+	snapshot := r.source.Snapshot()
+
+	target, found := find(snapshot.Repositories, name)
 	if !found {
 		return gitops.Result{}, ErrRepoNotManaged
 	}
@@ -196,7 +254,7 @@ func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error
 	}
 
 	r.reloadState()
-	result := r.syncOne(ctx, target)
+	result := r.syncOne(ctx, snapshot, target)
 	logResult(result)
 	r.store.RecordSingle(result)
 	return result, nil
@@ -220,7 +278,10 @@ type RemoteStatus struct {
 
 // CheckRemote 只探测远端是否可达，不改动本地仓库，也不改动同步状态。
 func (r *Runner) CheckRemote(ctx context.Context, name string) (RemoteStatus, error) {
-	target, found := r.find(name)
+	r.source.EnsureFresh()
+	snapshot := r.source.Snapshot()
+
+	target, found := find(snapshot.Repositories, name)
 	if !found {
 		return RemoteStatus{}, ErrRepoNotManaged
 	}
@@ -234,9 +295,9 @@ func (r *Runner) CheckRemote(ctx context.Context, name string) (RemoteStatus, er
 	return status, nil
 }
 
-// find 按名字在索引里查仓库。
-func (r *Runner) find(name string) (repoindex.Repository, bool) {
-	for _, repo := range r.repos {
+// find 按名字在清单里查仓库。
+func find(repositories []repoindex.Repository, name string) (repoindex.Repository, bool) {
+	for _, repo := range repositories {
 		if repo.Name == name {
 			return repo, true
 		}
@@ -245,14 +306,15 @@ func (r *Runner) find(name string) (repoindex.Repository, bool) {
 }
 
 // syncOne 处理单个仓库：先看是否被拦下，再同步；失败计入状态，成功清零并守卫体积。
-func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.Result {
-	repoPath := filepath.Join(r.cfg.RepositoryDir(), repo.Name)
+func (r *Runner) syncOne(ctx context.Context, snapshot live.Snapshot, repo repoindex.Repository) gitops.Result {
+	cfg := snapshot.Config
+	repoPath := filepath.Join(snapshot.RepositoryDir, repo.Name)
 	current := r.state.Get(repo.Name)
 
 	if current.Blocked {
 		return skipResult(repo, repoPath, "blocked", fmt.Sprintf(
 			"体积已达 %s，超过上限 %d MB，已停止自动同步",
-			humanMB(current.BlockedSize), r.cfg.SizeLimitMB,
+			humanMB(current.BlockedSize), cfg.SizeLimitMB,
 		))
 	}
 	if current.RemoteMissing {
@@ -262,7 +324,7 @@ func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.
 		))
 	}
 
-	history := repo.EffectiveHistory(r.cfg.DefaultHistory)
+	history := repo.EffectiveHistory(cfg.DefaultHistory)
 	result := r.git.Sync(ctx, gitops.Repository{
 		Name:    repo.Name,
 		URL:     repo.URL,
@@ -275,7 +337,7 @@ func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.
 	}
 
 	r.recordSuccess(repo)
-	r.applySizeGuard(ctx, repo, repoPath, &result)
+	r.applySizeGuard(ctx, cfg.SizeLimitMB, cfg.GCThresholdMB, cfg.GCGrowthMB, repo, repoPath, &result)
 	return result
 }
 
@@ -332,14 +394,24 @@ func (r *Runner) recordSuccess(repo repoindex.Repository) {
 
 // applySizeGuard 在同步完成后检查 .git 体积：
 // 超过上限就停机保护，超过压缩线且增长足够则压缩一次并记录基准。
-func (r *Runner) applySizeGuard(ctx context.Context, repo repoindex.Repository, repoPath string, result *gitops.Result) {
+//
+// 三个阈值都来自本轮快照，因此改配置里的体积阈值不需要重启。
+func (r *Runner) applySizeGuard(
+	ctx context.Context,
+	sizeLimitMB int,
+	gcThresholdMB int,
+	gcGrowthMB int,
+	repo repoindex.Repository,
+	repoPath string,
+	result *gitops.Result,
+) {
 	size, err := r.git.GitDirectorySize(repoPath)
 	if err != nil {
 		log.Printf("repo=%s measure size: %v", repo.Name, err)
 		return
 	}
 
-	limit := int64(r.cfg.SizeLimitMB) << 20
+	limit := int64(sizeLimitMB) << 20
 	if size >= limit {
 		if err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
 			current.Blocked = true
@@ -350,12 +422,12 @@ func (r *Runner) applySizeGuard(ctx context.Context, repo repoindex.Repository, 
 			log.Printf("repo=%s persist block state: %v", repo.Name, err)
 		}
 		result.Action = "blocked"
-		result.Error = fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(size), r.cfg.SizeLimitMB)
+		result.Error = fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(size), sizeLimitMB)
 		return
 	}
 
-	threshold := int64(r.cfg.GCThresholdMB) << 20
-	growth := int64(r.cfg.GCGrowthMB) << 20
+	threshold := int64(gcThresholdMB) << 20
+	growth := int64(gcGrowthMB) << 20
 	current := r.state.Get(repo.Name)
 	if size < threshold || size-current.LastGCSize < growth {
 		return

@@ -87,6 +87,23 @@ func (v *Vault) Repositories() []string {
 	return names
 }
 
+// Listing 返回全部登记仓库的元数据，按仓库名字典序排列。
+//
+// 尚未下载到本地的仓库只给出名字：它是合法的登记项，只是还没有内容可取。
+// 列表因此不会因为「刚加进索引、还没同步」就把仓库藏起来。
+func (v *Vault) Listing() []Meta {
+	names := v.Repositories()
+	metas := make([]Meta, 0, len(names))
+	for _, name := range names {
+		meta, err := v.Meta(name)
+		if err != nil {
+			meta = Meta{Name: name}
+		}
+		metas = append(metas, meta)
+	}
+	return metas
+}
+
 // Meta 描述一个仓库的当前状态。
 type Meta struct {
 	Name     string `json:"name"`

@@ -2,16 +2,20 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"eucli-deep-wiki/internal/config"
 	"eucli-deep-wiki/internal/gitops"
+	"eucli-deep-wiki/internal/live"
 	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
@@ -52,19 +56,78 @@ func (s *stubGit) ProbeRemote(_ context.Context, url string) error {
 	return s.probeErr
 }
 
+// stubSource 是测试用的运行期状态：给出一份固定快照，并记录被要求刷新的次数。
+type stubSource struct {
+	mu       sync.Mutex
+	snapshot live.Snapshot
+	changes  chan struct{}
+	refresh  int
+}
+
+func newStubSource(snapshot live.Snapshot) *stubSource {
+	return &stubSource{snapshot: snapshot, changes: make(chan struct{})}
+}
+
+func (s *stubSource) EnsureFresh() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refresh++
+}
+
+func (s *stubSource) Snapshot() live.Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot
+}
+
+func (s *stubSource) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changes
+}
+
+// update 替换快照并唤醒等待中的同步循环。
+func (s *stubSource) update(snapshot live.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot = snapshot
+	close(s.changes)
+	s.changes = make(chan struct{})
+}
+
 func newTestRunner(t *testing.T, git *stubGit, repos []repoindex.Repository) (*Runner, *state.Store) {
 	t.Helper()
 
-	dataDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.json")
-	body := `{
-		"dataRoot": "` + filepath.ToSlash(dataDir) + `",
-		"apiKeys": ["0123456789abcdef"],
+	cfg := newTestConfig(t, map[string]any{
 		"gcThresholdMB": 10,
-		"gcGrowthMB": 5,
-		"sizeLimitMB": 100
-	}`
-	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		"gcGrowthMB":    5,
+		"sizeLimitMB":   100,
+	})
+	guard, err := state.Open(filepath.Join(cfg.DataRoot, state.FileName))
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+
+	snapshot := newTestSnapshot(cfg, repos)
+	return New(newStubSource(snapshot), git, status.NewStore(), guard), guard
+}
+
+// newTestConfig 写一份最小可用配置并加载，取值由 overrides 决定。
+func newTestConfig(t *testing.T, overrides map[string]any) *config.Config {
+	t.Helper()
+
+	payload := map[string]any{
+		"dataRoot": filepath.ToSlash(t.TempDir()),
+		"apiKeys":  []string{"0123456789abcdef"},
+	}
+	maps.Copy(payload, overrides)
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, body, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -72,13 +135,16 @@ func newTestRunner(t *testing.T, git *stubGit, repos []repoindex.Repository) (*R
 	if err != nil {
 		t.Fatalf("config.Load() error = %v", err)
 	}
+	return cfg
+}
 
-	guard, err := state.Open(filepath.Join(dataDir, state.FileName))
-	if err != nil {
-		t.Fatalf("state.Open() error = %v", err)
+// newTestSnapshot 只填同步循环真正用到的字段：配置、清单与仓库根目录。
+func newTestSnapshot(cfg *config.Config, repos []repoindex.Repository) live.Snapshot {
+	return live.Snapshot{
+		Config:        cfg,
+		Repositories:  repos,
+		RepositoryDir: cfg.RepositoryDir(),
 	}
-
-	return New(cfg, repos, git, status.NewStore(), guard), guard
 }
 
 func TestSyncOneSkipsBlockedRepository(t *testing.T) {
@@ -319,7 +385,7 @@ func TestSyncOnePicksUpUnblockedStateFromDisk(t *testing.T) {
 	}
 
 	// repo unblock 由另一个进程直接改盘，服务重新加载后才会继续同步。
-	statePath := filepath.Join(target.cfg.DataRoot, state.FileName)
+	statePath := filepath.Join(target.source.Snapshot().Config.DataRoot, state.FileName)
 	if err := os.WriteFile(statePath, []byte(`{"repositories":{}}`), 0o600); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
@@ -380,5 +446,69 @@ func TestCheckRemoteRejectsUnknownRepository(t *testing.T) {
 	}
 	if len(git.probeURLs) != 0 {
 		t.Fatalf("probeURLs = %#v, want empty", git.probeURLs)
+	}
+}
+
+func TestSyncOnceRefreshesRuntimeStateFirst(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "skipped"}}
+	target, _ := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	if err := target.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v", err)
+	}
+	if source := target.source.(*stubSource); source.refresh == 0 {
+		t.Fatal("每轮同步开始前都应刷新运行期状态")
+	}
+
+	if _, err := target.SyncOne(context.Background(), "example"); err != nil {
+		t.Fatalf("SyncOne() error = %v", err)
+	}
+	if source := target.source.(*stubSource); source.refresh < 2 {
+		t.Fatalf("按需同步前也应刷新运行期状态，refresh = %d", source.refresh)
+	}
+}
+
+func TestSyncOnceUsesReloadedSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "skipped"}, size: 2 << 20}
+	repos := []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}}
+	target, guard := newTestRunner(t, git, repos)
+
+	// 运行期把上限调到 1 MB：下一轮同步就该按新阈值判定。
+	tightened := newTestSnapshot(newTestConfig(t, map[string]any{"sizeLimitMB": 1}), repos)
+	target.source.(*stubSource).update(tightened)
+
+	if err := target.SyncOnce(context.Background()); err == nil {
+		t.Fatal("SyncOnce() error = nil, want size limit error")
+	}
+	if !guard.Get("example").Blocked {
+		t.Fatal("重载后的体积上限没有生效")
+	}
+}
+
+func TestWaitNextRunReschedulesAfterIntervalChange(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{result: gitops.Result{Action: "skipped"}}
+	target, _ := newTestRunner(t, git, nil)
+	source := target.source.(*stubSource)
+
+	done := make(chan bool, 1)
+	go func() { done <- target.waitNextRun(context.Background()) }()
+
+	// 先让它按默认的 6h 排上计时器，再把周期改短并通知。
+	time.Sleep(20 * time.Millisecond)
+	source.update(newTestSnapshot(newTestConfig(t, map[string]any{"syncInterval": "20ms"}), nil))
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("waitNextRun() = false, want true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("周期改短后仍在等原来的 6h")
 	}
 }

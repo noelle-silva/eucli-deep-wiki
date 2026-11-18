@@ -14,24 +14,22 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
-func listRepositories(repoVault *vault.Vault) http.HandlerFunc {
+// view 取出当前生效的只读视图。
+//
+// 请求进入时中间件已经刷新过运行期状态，因此这里拿到的就是磁盘上的最新一份。
+func view(source Live) *vault.Vault {
+	return source.Snapshot().Vault
+}
+
+func listRepositories(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		names := repoVault.Repositories()
-		metas := make([]vault.Meta, 0, len(names))
-		for _, name := range names {
-			meta, err := repoVault.Meta(name)
-			if err != nil {
-				continue
-			}
-			metas = append(metas, meta)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"repositories": metas})
+		writeJSON(w, http.StatusOK, map[string]any{"repositories": view(source).Listing()})
 	}
 }
 
-func showRepository(repoVault *vault.Vault) http.HandlerFunc {
+func showRepository(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		meta, err := repoVault.Meta(r.PathValue("name"))
+		meta, err := view(source).Meta(r.PathValue("name"))
 		if err != nil {
 			writeVaultError(w, err)
 			return
@@ -40,9 +38,9 @@ func showRepository(repoVault *vault.Vault) http.HandlerFunc {
 	}
 }
 
-func showTree(repoVault *vault.Vault) http.HandlerFunc {
+func showTree(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tree, err := repoVault.Tree(r.PathValue("name"), r.URL.Query().Get("path"))
+		tree, err := view(source).Tree(r.PathValue("name"), r.URL.Query().Get("path"))
 		if err != nil {
 			writeVaultError(w, err)
 			return
@@ -51,7 +49,7 @@ func showTree(repoVault *vault.Vault) http.HandlerFunc {
 	}
 }
 
-func showFile(repoVault *vault.Vault) http.HandlerFunc {
+func showFile(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		requested := r.URL.Query().Get("path")
 		if requested == "" {
@@ -59,7 +57,7 @@ func showFile(repoVault *vault.Vault) http.HandlerFunc {
 			return
 		}
 
-		file, err := repoVault.File(r.PathValue("name"), requested)
+		file, err := view(source).File(r.PathValue("name"), requested)
 		if err != nil {
 			writeVaultError(w, err)
 			return
@@ -81,10 +79,10 @@ func showFile(repoVault *vault.Vault) http.HandlerFunc {
 	}
 }
 
-func searchRepository(repoVault *vault.Vault) http.HandlerFunc {
+func searchRepository(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
-		result, err := repoVault.Search(r.PathValue("name"), vault.SearchOptions{
+		result, err := view(source).Search(r.PathValue("name"), vault.SearchOptions{
 			Query:  values.Get("q"),
 			Path:   values.Get("path"),
 			Offset: parseLimit(values.Get("offset")),
@@ -109,10 +107,10 @@ func parseLimit(raw string) int {
 	return value
 }
 
-func findFiles(repoVault *vault.Vault) http.HandlerFunc {
+func findFiles(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
-		result, err := repoVault.Find(r.PathValue("name"), vault.FindOptions{
+		result, err := view(source).Find(r.PathValue("name"), vault.FindOptions{
 			Pattern: values.Get("name"),
 			Path:    values.Get("path"),
 			Limit:   vault.NormalizeFindLimit(parseLimit(values.Get("limit"))),

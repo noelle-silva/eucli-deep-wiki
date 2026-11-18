@@ -5,6 +5,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,7 +84,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(stripBOM(data), &cfg); err != nil {
 		return nil, err
 	}
 
@@ -94,6 +95,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// stripBOM 去掉 UTF-8 BOM：Windows 编辑器保存的文件常带 BOM，
+// 直接交给 json 解析会报 invalid character。
+func stripBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 }
 
 // SetHTTPAddress 用命令行参数覆盖监听地址，并复用同一套校验。

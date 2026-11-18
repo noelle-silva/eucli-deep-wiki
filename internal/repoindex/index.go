@@ -5,6 +5,7 @@
 package repoindex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,13 +57,18 @@ func Load(path string) (*Index, error) {
 	}
 
 	var idx Index
-	if err := json.Unmarshal(data, &idx); err != nil {
+	if err := json.Unmarshal(stripBOM(data), &idx); err != nil {
 		return nil, err
 	}
 	if err := idx.validate(); err != nil {
 		return nil, err
 	}
 	return &idx, nil
+}
+
+// stripBOM 去掉 UTF-8 BOM，避免带 BOM 的编辑结果导致解析失败。
+func stripBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 }
 
 // Save 校验后写回索引文件。

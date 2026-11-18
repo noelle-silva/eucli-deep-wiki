@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"eucli-deep-wiki/internal/bundle"
 	"eucli-deep-wiki/internal/vault"
@@ -20,7 +19,7 @@ type exportState struct {
 	mu sync.Mutex
 }
 
-func showArchive(repoVault *vault.Vault) http.HandlerFunc {
+func showArchive(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		paths := r.URL.Query()["path"]
@@ -33,11 +32,11 @@ func showArchive(repoVault *vault.Vault) http.HandlerFunc {
 			targets = append(targets, vault.ArchiveTarget{Repo: name, Path: item})
 		}
 
-		writeArchive(w, r, repoVault, targets)
+		writeArchive(w, r, view(source), targets)
 	}
 }
 
-func showMultiArchive(repoVault *vault.Vault) http.HandlerFunc {
+func showMultiArchive(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		includes := r.URL.Query()["include"]
 		if len(includes) == 0 {
@@ -61,7 +60,7 @@ func showMultiArchive(repoVault *vault.Vault) http.HandlerFunc {
 			targets = append(targets, vault.ArchiveTarget{Repo: repository, Path: target})
 		}
 
-		writeArchive(w, r, repoVault, targets)
+		writeArchive(w, r, view(source), targets)
 	}
 }
 
@@ -114,8 +113,12 @@ func writeArchive(w http.ResponseWriter, r *http.Request, repoVault *vault.Vault
 	}
 }
 
-func showBundle(repoVault *vault.Vault, cacheDir string, timeout time.Duration, shared *exportState) http.HandlerFunc {
+// showBundle 生成并下发带完整历史的 bundle。
+// 打包超时取自当前生效的配置，因此改 gitCommandTimeout 不需要重启。
+func showBundle(source Live, cacheDir string, shared *exportState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		snapshot := source.Snapshot()
+		repoVault := snapshot.Vault
 		name := r.PathValue("name")
 
 		meta, err := repoVault.Meta(name)
@@ -142,7 +145,7 @@ func showBundle(repoVault *vault.Vault, cacheDir string, timeout time.Duration, 
 		if _, err := os.Stat(cachePath); err != nil {
 			// 生成过程不受客户端断开影响，否则会留下半截缓存与锁文件。
 			buildCtx := context.WithoutCancel(r.Context())
-			if err := bundle.Create(buildCtx, repoDir, cachePath, timeout); err != nil {
+			if err := bundle.Create(buildCtx, repoDir, cachePath, snapshot.Config.GitCommandTimeoutDuration); err != nil {
 				shared.mu.Unlock()
 				writeJSON(w, http.StatusInternalServerError, apiError{
 					Code:    "bundle_failed",

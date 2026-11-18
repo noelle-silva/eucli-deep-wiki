@@ -378,6 +378,26 @@ func (c *Client) SyncAll(ctx context.Context) error {
 	return c.post(ctx, syncClient(), "/v1/sync", nil)
 }
 
+// ReloadResult 是一次重载的结果，与服务端 /v1/reload 的响应逐一对应。
+type ReloadResult struct {
+	At             time.Time `json:"at"`
+	ConfigReloaded bool      `json:"configReloaded"`
+	IndexReloaded  bool      `json:"indexReloaded"`
+	Repositories   int       `json:"repositories"`
+	NeedsRestart   []string  `json:"needsRestart"`
+	Error          string    `json:"error,omitempty"`
+}
+
+// Reload 让服务立刻重载配置与索引。
+// 重载失败时服务端仍然返回结果，失败原因在 Error 里，服务继续用旧配置运行。
+func (c *Client) Reload(ctx context.Context) (ReloadResult, error) {
+	var result ReloadResult
+	if err := c.post(ctx, c.http, "/v1/reload", &result); err != nil {
+		return ReloadResult{}, err
+	}
+	return result, nil
+}
+
 // syncClient 是同步类请求专用的客户端：单个大仓库的同步可能持续几分钟。
 func syncClient() *http.Client {
 	return &http.Client{Timeout: 15 * time.Minute}

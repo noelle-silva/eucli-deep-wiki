@@ -3,7 +3,6 @@ package httpapi
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"errors"
 	"net/http"
 	"strings"
 )
@@ -11,22 +10,19 @@ import (
 const bearerPrefix = "Bearer "
 
 // Authenticator 校验请求携带的 Bearer key。
-// 只保存摘要，比较时按固定长度做常量时间比对，避免长度与内容泄漏。
+//
+// key 集合从可替换的状态里现取，因此改配置里的 apiKeys 不需要重启：
+// 新增的 key 立刻可用，删掉的 key 立刻失效。
+//
+// 摘要按请求现算：几条短字符串的 SHA-256 是纳秒级开销，换来的是
+// 没有缓存失效问题的一致性；比较仍然是常量时间。
 type Authenticator struct {
-	digests [][sha256.Size]byte
+	source KeySource
 }
 
-// NewAuthenticator 由配置里的多个 key 构建校验器。
-func NewAuthenticator(keys []string) (*Authenticator, error) {
-	if len(keys) == 0 {
-		return nil, errors.New("at least one api key is required")
-	}
-
-	digests := make([][sha256.Size]byte, 0, len(keys))
-	for _, key := range keys {
-		digests = append(digests, sha256.Sum256([]byte(key)))
-	}
-	return &Authenticator{digests: digests}, nil
+// NewAuthenticator 由可替换的 key 集合构建校验器。
+func NewAuthenticator(source KeySource) *Authenticator {
+	return &Authenticator{source: source}
 }
 
 // Wrap 返回受保护的处理器。
@@ -57,7 +53,8 @@ func (a *Authenticator) authorized(r *http.Request) bool {
 
 	candidate := sha256.Sum256([]byte(token))
 	matched := 0
-	for _, digest := range a.digests {
+	for _, key := range a.source.APIKeys() {
+		digest := sha256.Sum256([]byte(key))
 		matched |= subtle.ConstantTimeCompare(candidate[:], digest[:])
 	}
 	return matched == 1

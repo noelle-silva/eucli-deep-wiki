@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"eucli-deep-wiki/internal/config"
+	"eucli-deep-wiki/internal/live"
+	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
 	"eucli-deep-wiki/internal/vault"
@@ -249,11 +252,21 @@ func TestHealthzStaysPublic(t *testing.T) {
 	}
 }
 
-func TestNewAuthenticatorRejectsEmptyKeys(t *testing.T) {
+func TestAuthenticatorRejectsEverythingWhenNoKeyIsConfigured(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewAuthenticator(nil); err == nil {
-		t.Fatal("NewAuthenticator() error = nil, want error")
+	// key 集合来自运行期状态；空集合必须全部拒绝，不能因为「没配置」就放行。
+	handler := NewAuthenticator(staticKeys(nil)).Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/repos", nil)
+	request.Header.Set("Authorization", "Bearer anything-at-all")
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
 	}
 }
 
@@ -267,49 +280,73 @@ func authorizedRequest(method string, target string) *http.Request {
 	return authorized(method, target)
 }
 
+// staticKeys 是固定 key 集合，供不需要重载的鉴权用例使用。
+type staticKeys []string
+
+func (k staticKeys) APIKeys() []string {
+	return k
+}
+
+// stubLive 是固定的生效视图：给出一份快照，被要求重载时返回预设结果。
+type stubLive struct {
+	snapshot  live.Snapshot
+	reload    live.Result
+	refreshed int
+}
+
+func (s *stubLive) EnsureFresh() { s.refreshed++ }
+
+func (s *stubLive) Snapshot() live.Snapshot { return s.snapshot }
+
+func (s *stubLive) Reload() live.Result { return s.reload }
+
+func (s *stubLive) APIKeys() []string { return s.snapshot.Config.APIKeys }
+
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
-	return buildRouter(t, []string{testAPIKey}, nil, nil)
+	return newRouterWith(t, newTestLive(t, []string{testAPIKey}), nil, nil)
 }
 
 func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
 	t.Helper()
-	return buildRouter(t, keys, nil, nil)
+	return newRouterWith(t, newTestLive(t, keys), nil, nil)
 }
 
 func newTestRouterWithSync(t *testing.T, trigger SyncTrigger) http.Handler {
 	t.Helper()
-	return buildRouter(t, []string{testAPIKey}, trigger, nil)
+	return newRouterWith(t, newTestLive(t, []string{testAPIKey}), trigger, nil)
 }
 
 func newTestRouterWithRemote(t *testing.T, checker RemoteChecker) http.Handler {
 	t.Helper()
-	return buildRouter(t, []string{testAPIKey}, nil, checker)
+	return newRouterWith(t, newTestLive(t, []string{testAPIKey}), nil, checker)
 }
 
 func newTestRouterWithStates(t *testing.T, states StateSource) http.Handler {
 	t.Helper()
 
-	root := t.TempDir()
-	repoVault, err := vault.New(root, []string{"example"}, vault.DefaultLimits())
-	if err != nil {
-		t.Fatalf("vault.New() error = %v", err)
-	}
-	auth, err := NewAuthenticator([]string{testAPIKey})
-	if err != nil {
-		t.Fatalf("NewAuthenticator() error = %v", err)
-	}
 	return NewRouter(Options{
-		Store:      status.NewStore(),
-		Vault:      repoVault,
-		Auth:       auth,
-		States:     states,
-		CacheDir:   t.TempDir(),
-		GitTimeout: 30 * time.Second,
+		Store:    status.NewStore(),
+		Live:     newTestLive(t, []string{testAPIKey}),
+		States:   states,
+		CacheDir: t.TempDir(),
 	})
 }
 
-func buildRouter(t *testing.T, keys []string, trigger SyncTrigger, checker RemoteChecker) http.Handler {
+// newRouterWith 用一份固定的生效视图组装路由。
+func newRouterWith(t *testing.T, source *stubLive, trigger SyncTrigger, checker RemoteChecker) http.Handler {
+	t.Helper()
+	return NewRouter(Options{
+		Store:    status.NewStore(),
+		Live:     source,
+		Sync:     trigger,
+		Remote:   checker,
+		CacheDir: t.TempDir(),
+	})
+}
+
+// newTestLive 准备一份只含仓库 example 的生效视图。
+func newTestLive(t *testing.T, keys []string) *stubLive {
 	t.Helper()
 
 	root := t.TempDir()
@@ -323,20 +360,38 @@ func buildRouter(t *testing.T, keys []string, trigger SyncTrigger, checker Remot
 		t.Fatalf("vault.New() error = %v", err)
 	}
 
-	auth, err := NewAuthenticator(keys)
-	if err != nil {
-		t.Fatalf("NewAuthenticator() error = %v", err)
+	return &stubLive{snapshot: live.Snapshot{
+		Config:         newTestConfig(t, keys),
+		Repositories:   []repoindex.Repository{{Name: "example", URL: "https://example.com/example.git"}},
+		Vault:          repoVault,
+		RepositoryDir:  root,
+		ConfigLoadedAt: time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC),
+		IndexLoadedAt:  time.Date(2025, 3, 4, 5, 6, 8, 0, time.UTC),
+	}}
+}
+
+// newTestConfig 写一份最小可用配置并加载，让 key 与超时都走真实校验。
+func newTestConfig(t *testing.T, keys []string) *config.Config {
+	t.Helper()
+
+	payload := map[string]any{
+		"dataRoot": filepath.ToSlash(t.TempDir()),
+		"apiKeys":  keys,
 	}
-	return NewRouter(Options{
-		Store:      status.NewStore(),
-		Vault:      repoVault,
-		Auth:       auth,
-		Sync:       trigger,
-		Remote:     checker,
-		States:     nil,
-		CacheDir:   t.TempDir(),
-		GitTimeout: 30 * time.Second,
-	})
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+	return cfg
 }
 
 func writeFile(t *testing.T, dir string, name string, content string) {
@@ -448,5 +503,187 @@ func TestFindEndpointRequiresPattern(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestReloadEndpointRequiresKey(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/reload", nil))
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+	if recorder.Header().Get("WWW-Authenticate") == "" {
+		t.Fatal("缺少 WWW-Authenticate")
+	}
+}
+
+func TestReloadEndpointReturnsResult(t *testing.T) {
+	t.Parallel()
+
+	source := newTestLive(t, []string{testAPIKey})
+	source.reload = live.Result{
+		At:             time.Date(2025, 3, 4, 5, 6, 9, 0, time.UTC),
+		ConfigReloaded: true,
+		IndexReloaded:  true,
+		Repositories:   4,
+		NeedsRestart:   []string{"httpAddress"},
+	}
+	handler := newRouterWith(t, source, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodPost, "/v1/reload"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload live.Result
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !payload.ConfigReloaded || !payload.IndexReloaded || payload.Repositories != 4 {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if len(payload.NeedsRestart) != 1 || payload.NeedsRestart[0] != "httpAddress" {
+		t.Fatalf("NeedsRestart = %#v", payload.NeedsRestart)
+	}
+}
+
+func TestReloadEndpointReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	source := newTestLive(t, []string{testAPIKey})
+	source.reload = live.Result{
+		At:            time.Date(2025, 3, 4, 5, 6, 9, 0, time.UTC),
+		IndexReloaded: true,
+		Repositories:  1,
+		NeedsRestart:  []string{},
+		Error:         "配置加载失败（config.json）: invalid character",
+	}
+	handler := newRouterWith(t, source, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodPost, "/v1/reload"))
+
+	// 请求本身被正确处理了，失败原因在结果里，因此仍然是 200。
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid character") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestStatusIncludesRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	source := newTestLive(t, []string{testAPIKey})
+	source.snapshot.NeedsRestart = []string{"httpAddress", "dataRoot"}
+	source.snapshot.LastReload = live.Result{
+		At:             time.Date(2025, 3, 4, 5, 6, 9, 0, time.UTC),
+		ConfigReloaded: true,
+		IndexReloaded:  false,
+		Repositories:   1,
+		NeedsRestart:   []string{"httpAddress", "dataRoot"},
+	}
+	handler := newRouterWith(t, source, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/status"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		Running         bool           `json:"running"`
+		Summary         map[string]int `json:"summary"`
+		ConfigLoadedAt  time.Time      `json:"configLoadedAt"`
+		IndexLoadedAt   time.Time      `json:"indexLoadedAt"`
+		RepositoryCount int            `json:"repositoryCount"`
+		SyncInterval    string         `json:"syncInterval"`
+		GCThresholdMB   int            `json:"gcThresholdMB"`
+		NeedsRestart    []string       `json:"needsRestart"`
+		LastReload      live.Result    `json:"lastReload"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !payload.ConfigLoadedAt.Equal(source.snapshot.ConfigLoadedAt) {
+		t.Fatalf("configLoadedAt = %v", payload.ConfigLoadedAt)
+	}
+	if !payload.IndexLoadedAt.Equal(source.snapshot.IndexLoadedAt) {
+		t.Fatalf("indexLoadedAt = %v", payload.IndexLoadedAt)
+	}
+	if payload.RepositoryCount != 1 {
+		t.Fatalf("repositoryCount = %d", payload.RepositoryCount)
+	}
+	if payload.SyncInterval != source.snapshot.Config.SyncInterval {
+		t.Fatalf("syncInterval = %q", payload.SyncInterval)
+	}
+	if payload.GCThresholdMB != source.snapshot.Config.GCThresholdMB {
+		t.Fatalf("gcThresholdMB = %d", payload.GCThresholdMB)
+	}
+	if len(payload.NeedsRestart) != 2 {
+		t.Fatalf("needsRestart = %#v", payload.NeedsRestart)
+	}
+	if payload.LastReload.Error != "" || !payload.LastReload.ConfigReloaded {
+		t.Fatalf("lastReload = %#v", payload.LastReload)
+	}
+
+	// 原有字段语义不变：仍然有 running 与 summary。
+	if payload.Running {
+		t.Fatal("running 应为 false")
+	}
+	if payload.Summary == nil {
+		t.Fatal("summary 不应为 null")
+	}
+}
+
+func TestProtectedEndpointsRefreshRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	source := newTestLive(t, []string{testAPIKey})
+	handler := newRouterWith(t, source, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos"))
+
+	if source.refreshed == 0 {
+		t.Fatal("受保护接口进入前应刷新运行期状态")
+	}
+}
+
+func TestListRepositoriesKeepsUnsynchronizedRepository(t *testing.T) {
+	t.Parallel()
+
+	source := newTestLive(t, []string{testAPIKey})
+	// 索引里多了一个还没同步到本地的仓库。
+	source.snapshot.Repositories = append(source.snapshot.Repositories,
+		repoindex.Repository{Name: "fresh", URL: "https://example.com/fresh.git"})
+	source.snapshot.Vault, _ = vault.New(source.snapshot.RepositoryDir, []string{"example", "fresh"}, vault.DefaultLimits())
+	handler := newRouterWith(t, source, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		Repositories []vault.Meta `json:"repositories"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Repositories) != 2 || payload.Repositories[1].Name != "fresh" {
+		t.Fatalf("repositories = %#v", payload.Repositories)
 	}
 }

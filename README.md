@@ -38,19 +38,21 @@
 
 `dataRoot` 支持绝对路径，也支持单层相对名字（按启动时的工作目录解析）；`repositoryRoot` 与 `repositoryIndex` 始终是单层名字，挂在 `dataRoot` 之下。
 
-| 字段 | 含义 | 默认值 |
-| --- | --- | --- |
-| `dataRoot` | 运行数据根目录 | `data` |
-| `repositoryRoot` | 参考仓库目录（相对 `dataRoot`） | `repository` |
-| `repositoryIndex` | 仓库索引文件（相对 `dataRoot`） | `repositories.json` |
-| `syncInterval` | 同步周期 | `6h` |
-| `gitCommandTimeout` | 单条 git 命令超时 | `20m` |
-| `maxParallelSyncs` | 并行同步数量 | `1` |
-| `httpAddress` | 状态服务监听地址 | `127.0.0.1:9997` |
-| `defaultHistory` | 默认历史档位：`shallow` / `full` | `shallow` |
-| `gcThresholdMB` | `.git` 达到多少 MB 才考虑压缩 | `2048` |
-| `gcGrowthMB` | 距上次压缩增长多少 MB 才真的压 | `300` |
-| `sizeLimitMB` | `.git` 超过多少 MB 停止同步 | `5120` |
+| 字段 | 含义 | 默认值 | 改完是否需要重启 |
+| --- | --- | --- | --- |
+| `dataRoot` | 运行数据根目录 | `data` | 是 |
+| `repositoryRoot` | 参考仓库目录（相对 `dataRoot`） | `repository` | 是 |
+| `repositoryIndex` | 仓库索引文件（相对 `dataRoot`） | `repositories.json` | 是 |
+| `httpAddress` | 状态服务监听地址 | `127.0.0.1:9997` | 是 |
+| `syncInterval` | 同步周期 | `6h` | 否 |
+| `gitCommandTimeout` | 单条 git 命令超时 | `20m` | 否 |
+| `maxParallelSyncs` | 并行同步数量 | `1` | 否 |
+| `defaultHistory` | 默认历史档位：`shallow` / `full` | `shallow` | 否 |
+| `gcThresholdMB` | `.git` 达到多少 MB 才考虑压缩 | `2048` | 否 |
+| `gcGrowthMB` | 距上次压缩增长多少 MB 才真的压 | `300` | 否 |
+| `sizeLimitMB` | `.git` 超过多少 MB 停止同步 | `5120` | 否 |
+
+标“是”的四个字段在启动时被固化：监听地址由 HTTP 服务持有，数据根目录决定索引文件与同步状态文件的位置，仓库目录与索引文件名决定读写位置。改了它们不会静默忽略——`GET /status` 的 `needsRestart` 会点名，日志里也会留一条记录。其余字段改完即生效，见“运行期热加载”。
 
 历史档位只有两档：`shallow` 只保留最新一个提交（默认，`.git` 很小），`full` 保留完整历史。单个仓库可以在索引里用 `"history"` 字段覆盖全局默认。不提供“无 Git”档——没有 `.git` 就无法增量拉取、也无法精确对齐到某个提交，代价高于收益。
 
@@ -153,10 +155,40 @@ scripts/windows/
 `repositories.json` 记录参考仓库名单，位于 `dataRoot` 之下。可以直接用 Git 链接追加，工具会从链接末尾推导本地目录名，并在写入前统一校验：
 
 ```sh
-go run ./cmd/reference-add -config <配置文件路径> https://github.com/xxxx/xxxx.git
+eucli-dw repo add https://github.com/xxxx/xxxx.git
 ```
 
-添加完成后，若长期服务正在运行，需要重启让新索引生效。
+写盘成功后命令会顺带通知正在运行的服务重载一次，新仓库立刻出现在 `/v1/repos`，不需要重启。服务没在跑不算失败：命令照样返回 0，并提示「已写入索引，服务将在下一轮同步前自动加载」。只想写索引、不碰服务时加 `--no-reload`。
+
+把某个仓库从索引里删掉同样即生效：`/v1/repos`、`/tree`、`/file`、`/find`、`/search`、`/archive`、`/bundle` 对它一律返回 `404`，但 `dataRoot/repository/<仓库>` 下的数据**不会**被删除——索引只决定“要不要对外提供”，不负责回收磁盘。
+
+## 运行期热加载
+
+服务不再只在启动时读一次配置文件与索引文件。以下时机都会比对两个文件的指纹（修改时间 + 大小），指纹变了才重新加载，没变时只花两次 `stat`：
+
+- 每轮定时同步开始前；
+- 每次按需同步（`POST /v1/repos/{name}/sync`）与远端探测前；
+- 每个受保护的 HTTP 请求进入前（`/status` 与全部 `/v1/...`）。
+
+重载后立即生效的有：鉴权用的 `apiKeys`（新增的 key 下一个请求就能用，删掉的立刻 401）、`syncInterval`（等待中的计时按新周期重新排）、`gitCommandTimeout`、`maxParallelSyncs`、`defaultHistory`、GC 与体积阈值、以及整份仓库清单（同步清单与只读视图一起换，不会出现“同步了但查不到”）。
+
+三条保证：
+
+- **原子替换**：新状态整份构建完成后才切换，并发请求与正在跑的同步拿到的是完整的一份，不会读到半新半旧；正在进行的同步仍用它开始时那份配置跑完。
+- **失败保留旧值**：JSON 非法或校验不过时，旧配置与旧视图继续工作，服务不停摆，失败原因写进最近一次重载结果。
+- **不重复踩坑**：同一份坏文件不会被每轮重复解析，改好（指纹变化）之后自动重试。
+
+也可以显式触发一次，两个文件都会被重新解析：
+
+```sh
+eucli-dw reload                # 文本结果
+eucli-dw reload --json         # 原始结果
+curl -X POST -H "Authorization: Bearer <key>" http://127.0.0.1:9997/v1/reload
+```
+
+返回 `{configReloaded, indexReloaded, repositories, needsRestart[]}`（另带 `at`，失败时带 `error`）。两个布尔值的含义是「生效中的这份是否就是磁盘上的这份」：文件没变但上次加载成功时同样为 `true`；为 `false` 时 `error` 一定非空，`/status` 里也能看到。重载失败时接口仍返回 `200`（请求本身被正确处理），`eucli-dw reload` 此时退出码为 1。
+
+需要重启才能生效的字段（`httpAddress`、`dataRoot`、`repositoryRoot`、`repositoryIndex`）一旦在配置文件里被改动，`/status` 的 `needsRestart` 会列出字段名，日志里也会留一条 `restart required for ...`，改回去提示随之消失。
 
 ## 同步策略
 
@@ -173,6 +205,19 @@ http://127.0.0.1:9997/status
 ```
 
 `/status` 返回当前或上一轮的同步快照：`running` 表示是否有同步在跑，`results` 是已记录的结果，`summary` 按动作统计条数。运行中 `summary` 是已处理部分的汇总，结束后是全量汇总。
+
+同一个响应里还带着运行期状态，用来确认“改的东西到底生效了没有”：
+
+| 字段 | 含义 |
+| --- | --- |
+| `configLoadedAt` | 当前生效配置的加载时间 |
+| `indexLoadedAt` | 当前生效仓库清单的加载时间 |
+| `repositoryCount` | 当前生效的仓库数 |
+| `syncInterval` / `gcThresholdMB` / `gcGrowthMB` / `sizeLimitMB` / `defaultHistory` | 当前生效的取值（改完配置后可直接对照） |
+| `lastReload` | 最近一次重载结果：`at`、`configReloaded`、`indexReloaded`、`repositories`、`needsRestart`，失败时还有 `error` |
+| `needsRestart` | 改了但必须重启才能生效的字段名列表，空数组表示没有 |
+
+原有字段语义不变，新字段只加不改。
 
 每个仓库的远端状态与体积保护记录在 `/v1/state`：
 
@@ -215,6 +260,7 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 | `POST /v1/repos/{name}/sync` | 立刻同步指定仓库，同步返回结果 |
 | `POST /v1/sync` | 触发一轮全量同步，立即返回 `202` |
 | `POST /v1/repos/{name}/check` | 探测远端是否可达，不改动本地仓库 |
+| `POST /v1/reload` | 立即重载配置与索引，返回本次重载结果 |
 | `GET /v1/state` | 每个仓库的远端状态与体积保护记录 |
 
 按需同步用于「刚改完文档，不想等 6 小时」。这里的“只读”是针对仓库内容的：客户端永远不能写入、修改或删除仓库里的文件；触发同步是服务器自身的运维动作，只是把远端内容拉到本地，不改变任何远端仓库。已有同步在跑时返回 `409 sync_busy`，不排队。
@@ -281,7 +327,7 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 
 ```sh
 eucli-dw serve [--service-config 路径] [--http-address 地址] [--once]
-eucli-dw repo add [--service-config 路径] <git-url>...
+eucli-dw repo add [--service-config 路径] [--no-reload] <git-url>...
 eucli-dw repo list [--service-config 路径] [--json]
 eucli-dw repo check [--service-config 路径] [仓库]...
 eucli-dw repo unblock [--service-config 路径] <仓库>
@@ -292,6 +338,7 @@ eucli-dw search [参数] <仓库> <关键词>   --path 限定目录，--offset �
 eucli-dw find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配；--offset 翻页，--limit 默认 200、上限 10000
 eucli-dw repos [--json]             列出服务器上的仓库与提交号
 eucli-dw status [--json]            查看同步状态
+eucli-dw reload [--json]            让服务立刻重载配置与索引
 eucli-dw sync [--json] <仓库> | sync --all [--json]
 eucli-dw pull <仓库>[:路径] ... [-o 文件] [--progress] [--json]
 eucli-dw bundle <仓库> [-o 文件] [--progress] [--json]
@@ -355,7 +402,7 @@ eucli-dw search claw-code subagent --limit 5
 eucli-dw get claw-code README.md --json     # 带提交号的 JSON
 ```
 
-`repos` 与 `status` 是客户端命令，只走网络；`status` 至少给出运行状态、上轮结果统计、下一轮预计时间与失败明细。
+`repos`、`status` 与 `reload` 是客户端命令，只走网络；`status` 至少给出运行状态、上轮结果统计、下一轮预计时间、仓库数、同步周期、配置与索引的加载时间、最近一次重载结果，以及需要重启才能生效的字段；`reload` 打印服务端的重载结果，失败时退出码为 1。
 
 `config show` 只显示 key 的首尾各四位；查询命令都支持把参数写在位置参数之后，也支持 `--json` 输出原始结构，便于脚本与 Agent 消费。
 

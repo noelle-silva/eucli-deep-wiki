@@ -213,3 +213,17 @@ func writeConfig(t *testing.T, data string) string {
 	}
 	return path
 }
+
+func TestLoadAcceptsUTF8BOM(t *testing.T) {
+	t.Parallel()
+
+	body := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"apiKeys":["`+testKey+`"]}`)...)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}

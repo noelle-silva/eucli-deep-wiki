@@ -3,14 +3,17 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
+	"eucli-deep-wiki/internal/repoindex"
 	"eucli-deep-wiki/internal/state"
 )
 
@@ -711,5 +714,250 @@ func TestRepoCheckJSONOutput(t *testing.T) {
 	}
 	if payload.Checked != 1 || payload.Reachable != 1 || len(payload.Results) != 1 {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+// requestLog 记录假服务收到的请求，供断言命令到底发了什么。
+type requestLog struct {
+	mu       sync.Mutex
+	requests []string
+}
+
+func (l *requestLog) record(request *http.Request) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.requests = append(l.requests, request.Method+" "+request.URL.Path)
+}
+
+func (l *requestLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.requests...)
+}
+
+func TestRepoAddReloadsRunningService(t *testing.T) {
+	t.Parallel()
+
+	log := &requestLog{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.record(r)
+		if r.Header.Get("Authorization") != "Bearer 0123456789abcdef" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"configReloaded":true,"indexReloaded":true,"repositories":1,"needsRestart":[]}`))
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	configPath := writeServiceConfig(t, dataDir, server.URL)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := Run([]string{
+		"repo", "add", "https://github.com/example/example.git",
+		"--service-config", configPath,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0（stderr = %q）", code, stderr.String())
+	}
+	if requests := log.snapshot(); len(requests) != 1 || requests[0] != "POST /v1/reload" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if !strings.Contains(stdout.String(), "added example") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "reloaded 1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+
+	index, err := repoindex.Load(filepath.Join(dataDir, "repositories.json"))
+	if err != nil {
+		t.Fatalf("repoindex.Load() error = %v", err)
+	}
+	if len(index.Repositories) != 1 || index.Repositories[0].Name != "example" {
+		t.Fatalf("Repositories = %#v", index.Repositories)
+	}
+}
+
+func TestRepoAddSkipsReloadWithFlag(t *testing.T) {
+	t.Parallel()
+
+	log := &requestLog{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.record(r)
+		_, _ = w.Write([]byte(`{"configReloaded":true,"indexReloaded":true,"repositories":1}`))
+	}))
+	defer server.Close()
+
+	configPath := writeServiceConfig(t, t.TempDir(), server.URL)
+
+	stdout := &bytes.Buffer{}
+	code := Run([]string{
+		"repo", "add", "https://github.com/example/example.git", "--no-reload",
+		"--service-config", configPath,
+	}, stdout, &bytes.Buffer{})
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	if requests := log.snapshot(); len(requests) != 0 {
+		t.Fatalf("--no-reload 不该发请求，requests = %#v", requests)
+	}
+	if strings.Contains(stdout.String(), "reloaded") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRepoAddWarnsWhenServiceUnreachable(t *testing.T) {
+	t.Parallel()
+
+	// 先占一个端口再放掉，得到一个「一定连不上」的地址。
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	configPath := writeServiceConfig(t, t.TempDir(), "http://"+address)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := Run([]string{
+		"repo", "add", "https://github.com/example/example.git",
+		"--service-config", configPath,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0（索引已写入，服务不可达不算失败）", code)
+	}
+	if !strings.Contains(stderr.String(), "已写入索引，服务将在下一轮同步前自动加载") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "added example") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestReloadCommandPrintsResult(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/reload" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+			"configReloaded": true,
+			"indexReloaded": true,
+			"repositories": 3,
+			"needsRestart": ["httpAddress"]
+		}`))
+	}))
+	defer server.Close()
+
+	stdout := &bytes.Buffer{}
+	code := Run([]string{
+		"reload", "--server", server.URL, "--key", "0123456789abcdef",
+		"--config", filepath.Join(t.TempDir(), "absent.json"),
+	}, stdout, &bytes.Buffer{})
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "已重载") || !strings.Contains(output, "仓库数:   3") {
+		t.Fatalf("stdout = %q", output)
+	}
+	if !strings.Contains(output, "需要重启: httpAddress") {
+		t.Fatalf("stdout = %q", output)
+	}
+}
+
+func TestReloadCommandReportsFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"configReloaded": false,
+			"indexReloaded": true,
+			"repositories": 1,
+			"needsRestart": [],
+			"error": "配置加载失败（config.json）: invalid character"
+		}`))
+	}))
+	defer server.Close()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := Run([]string{
+		"reload", "--json", "--server", server.URL, "--key", "0123456789abcdef",
+		"--config", filepath.Join(t.TempDir(), "absent.json"),
+	}, stdout, stderr)
+
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stdout.String(), `"configReloaded": false`) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `"ok": false`) {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestStatusShowsRuntimeReloadState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			_, _ = w.Write([]byte(`{
+				"running": false,
+				"total": 2,
+				"summary": {},
+				"results": [],
+				"singleResults": [],
+				"configLoadedAt": "2025-03-04T05:06:07Z",
+				"indexLoadedAt": "2025-03-04T05:06:08Z",
+				"repositoryCount": 2,
+				"syncInterval": "90s",
+				"gcThresholdMB": 12,
+				"needsRestart": ["httpAddress"],
+				"lastReload": {
+					"at": "2025-03-04T05:06:09Z",
+					"configReloaded": false,
+					"indexReloaded": true,
+					"error": "配置加载失败（config.json）: invalid character"
+				}
+			}`))
+		case "/v1/state":
+			_, _ = w.Write([]byte(`{"repositories":{}}`))
+		default:
+			t.Errorf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	stdout := &bytes.Buffer{}
+	code := Run([]string{
+		"status", "--server", server.URL, "--key", "0123456789abcdef",
+		"--config", filepath.Join(t.TempDir(), "absent.json"),
+	}, stdout, &bytes.Buffer{})
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "仓库数:   2") || !strings.Contains(output, "同步周期: 90s") {
+		t.Fatalf("stdout = %q", output)
+	}
+	if !strings.Contains(output, "最近重载: 失败（配置加载失败") {
+		t.Fatalf("stdout = %q", output)
+	}
+	if !strings.Contains(output, "需要重启: httpAddress") {
+		t.Fatalf("stdout = %q", output)
 	}
 }

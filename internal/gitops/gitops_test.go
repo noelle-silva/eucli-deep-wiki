@@ -53,7 +53,7 @@ func TestSyncRecreatesRepositoryWithStaleLock(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
 
 	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
@@ -82,7 +82,7 @@ func TestSyncAlignsModeOnlyChanges(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
 
 	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
@@ -112,7 +112,7 @@ func TestSyncRecreatesNonGitTarget(t *testing.T) {
 		t.Fatalf("write stale file: %v", err)
 	}
 
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	result := client.Sync(context.Background(), Repository{
 		Name: "example",
 		URL:  createLocalRepository(t, "fresh.txt", "fresh"),
@@ -132,7 +132,7 @@ func TestSyncRecreatesMismatchedOrigin(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	firstURL := createLocalRepository(t, "first.txt", "first")
 	secondURL := createLocalRepository(t, "second.txt", "second")
 
@@ -158,7 +158,7 @@ func TestSyncSkipsCleanCurrentRepository(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
 
 	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
@@ -179,7 +179,7 @@ func TestSyncUpdatesWhenRemoteAdvances(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remote := createRepository(t, "fresh.txt", "fresh")
 	remoteURL := fileURL(t, remote)
 
@@ -203,7 +203,7 @@ func TestSyncUpdatesDirtyRepositoryEvenWhenRemoteCurrent(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remoteURL := createLocalRepository(t, "fresh.txt", "fresh")
 
 	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
@@ -230,7 +230,7 @@ func TestRemoveControlledTargetRejectsPathOutsideRoot(t *testing.T) {
 
 	root := filepath.Join(t.TempDir(), "root")
 	outside := filepath.Join(t.TempDir(), "example")
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 
 	if err := client.removeControlledTarget(outside); err == nil {
 		t.Fatal("removeControlledTarget() error = nil, want outside-root error")
@@ -245,7 +245,7 @@ func TestSyncRejectsNonDirectoryRoot(t *testing.T) {
 		t.Fatalf("write root file: %v", err)
 	}
 
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	result := client.Sync(context.Background(), Repository{
 		Name: "example",
 		URL:  createLocalRepository(t, "fresh.txt", "fresh"),
@@ -328,7 +328,7 @@ func TestClassifyRemoteUnavailableWrapsSentinel(t *testing.T) {
 func TestProbeRemoteAcceptsLiveRepository(t *testing.T) {
 	t.Parallel()
 
-	client := New(t.TempDir(), 30*time.Second)
+	client := New(t.TempDir(), FixedTimeout(30*time.Second))
 	if err := client.ProbeRemote(context.Background(), createLocalRepository(t, "fresh.txt", "fresh")); err != nil {
 		t.Fatalf("ProbeRemote() error = %v", err)
 	}
@@ -337,7 +337,7 @@ func TestProbeRemoteAcceptsLiveRepository(t *testing.T) {
 func TestProbeRemoteReportsMissingRemote(t *testing.T) {
 	t.Parallel()
 
-	client := New(t.TempDir(), 30*time.Second)
+	client := New(t.TempDir(), FixedTimeout(30*time.Second))
 	absent := fileURL(t, filepath.Join(t.TempDir(), "absent"))
 
 	err := client.ProbeRemote(context.Background(), absent)
@@ -349,7 +349,7 @@ func TestProbeRemoteReportsMissingRemote(t *testing.T) {
 func TestProbeRemoteRequiresURL(t *testing.T) {
 	t.Parallel()
 
-	client := New(t.TempDir(), 30*time.Second)
+	client := New(t.TempDir(), FixedTimeout(30*time.Second))
 	if err := client.ProbeRemote(context.Background(), "  "); err == nil {
 		t.Fatal("ProbeRemote() error = nil, want url error")
 	}
@@ -359,7 +359,7 @@ func TestSyncReportsRemoteUnavailableAfterRemoteDeleted(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 30*time.Second)
+	client := New(root, FixedTimeout(30*time.Second))
 	remote := createRepository(t, "fresh.txt", "fresh")
 	remoteURL := fileURL(t, remote)
 
@@ -514,7 +514,7 @@ func TestSyncCompactsFullRepositoryInPlace(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	client := New(root, 60*time.Second)
+	client := New(root, FixedTimeout(60*time.Second))
 	remote := createRepository(t, "fresh.txt", "fresh")
 	commitFile(t, remote, "second.txt", "second")
 	remoteURL := fileURL(t, remote)

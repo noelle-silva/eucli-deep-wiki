@@ -13,14 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"eucli-deep-wiki/internal/config"
 	"eucli-deep-wiki/internal/gitops"
 	"eucli-deep-wiki/internal/httpapi"
-	"eucli-deep-wiki/internal/repoindex"
+	"eucli-deep-wiki/internal/live"
 	"eucli-deep-wiki/internal/runner"
 	"eucli-deep-wiki/internal/state"
 	"eucli-deep-wiki/internal/status"
-	"eucli-deep-wiki/internal/vault"
 )
 
 // runServe 启动同步与查询服务。
@@ -37,52 +35,29 @@ func runServe(args []string, stderr io.Writer) int {
 		return parseExitCode(err)
 	}
 
-	cfg, err := config.Load(*serviceConfig)
+	// 运行期状态从这里开始负责配置文件与索引的生命周期：
+	// 首次加载失败直接退出，之后的变化由重载接手。
+	source, err := live.Open(live.Options{ConfigPath: *serviceConfig, HTTPAddress: *httpAddress})
 	if err != nil {
 		log.Printf("load config: %v", err)
 		return 1
 	}
-	if *httpAddress != "" {
-		if err := cfg.SetHTTPAddress(*httpAddress); err != nil {
-			log.Printf("set http address: %v", err)
-			return 1
-		}
-	}
-
-	index, err := repoindex.Load(cfg.RepositoryIndexPath())
-	if err != nil {
-		log.Printf("load repository index: %v", err)
-		return 1
-	}
-
-	names := make([]string, 0, len(index.Repositories))
-	for _, repository := range index.Repositories {
-		names = append(names, repository.Name)
-	}
-	repoVault, err := vault.New(cfg.RepositoryDir(), names, vault.DefaultLimits())
-	if err != nil {
-		log.Printf("build read vault: %v", err)
-		return 1
-	}
-
-	auth, err := httpapi.NewAuthenticator(cfg.APIKeys)
-	if err != nil {
-		log.Printf("build authenticator: %v", err)
-		return 1
-	}
+	snapshot := source.Snapshot()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	guard, err := state.Open(filepath.Join(cfg.DataRoot, state.FileName))
+	guard, err := state.Open(filepath.Join(snapshot.Config.DataRoot, state.FileName))
 	if err != nil {
 		log.Printf("load sync state: %v", err)
 		return 1
 	}
 
 	store := status.NewStore()
-	git := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
-	syncer := runner.New(cfg, index.Repositories, git, store, guard)
+	git := gitops.New(snapshot.RepositoryDir, func() time.Duration {
+		return source.Snapshot().Config.GitCommandTimeoutDuration
+	})
+	syncer := runner.New(source, git, store, guard)
 
 	if *once {
 		if err := syncer.SyncOnce(ctx); err != nil {
@@ -93,22 +68,20 @@ func runServe(args []string, stderr io.Writer) int {
 	}
 
 	server := &http.Server{
-		Addr: cfg.HTTPAddress,
+		Addr: snapshot.Config.HTTPAddress,
 		Handler: httpapi.NewRouter(httpapi.Options{
-			Store:      store,
-			Vault:      repoVault,
-			Auth:       auth,
-			Sync:       syncer,
-			Remote:     syncer,
-			States:     guard,
-			CacheDir:   filepath.Join(cfg.DataRoot, "cache"),
-			GitTimeout: cfg.GitCommandTimeoutDuration,
+			Store:    store,
+			Live:     source,
+			Sync:     syncer,
+			Remote:   syncer,
+			States:   guard,
+			CacheDir: filepath.Join(snapshot.Config.DataRoot, "cache"),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {
-		log.Printf("server listening on http://%s", cfg.HTTPAddress)
+		log.Printf("server listening on http://%s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server stopped: %v", err)
 			stop()

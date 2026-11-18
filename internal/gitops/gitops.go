@@ -72,13 +72,25 @@ func (s localState) matches(head remoteHead) bool {
 	return s.clean && s.branch == head.branch && s.revision == head.revision
 }
 
-type Client struct {
-	root           string
-	commandTimeout time.Duration
+// TimeoutFunc 返回当前生效的单条 git 命令超时。
+//
+// 用函数而不是固定值：改配置里的 gitCommandTimeout 立刻生效，
+// 不需要重启服务。
+type TimeoutFunc func() time.Duration
+
+// FixedTimeout 返回固定超时，供不需要运行期调整的调用方使用。
+func FixedTimeout(timeout time.Duration) TimeoutFunc {
+	return func() time.Duration { return timeout }
 }
 
-func New(root string, commandTimeout time.Duration) *Client {
-	return &Client{root: root, commandTimeout: commandTimeout}
+type Client struct {
+	root    string
+	timeout TimeoutFunc
+}
+
+// New 构建 git 客户端；root 是仓库根目录，timeout 在每次执行命令时现取。
+func New(root string, timeout TimeoutFunc) *Client {
+	return &Client{root: root, timeout: timeout}
 }
 
 func (c *Client) Sync(ctx context.Context, repo Repository) Result {
@@ -256,7 +268,7 @@ func (c *Client) pruneReferences(ctx context.Context, path string, branch string
 
 // runInput 运行需要从标准输入喂数据的 git 命令。
 func (c *Client) runInput(ctx context.Context, dir string, input string, args ...string) (string, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
+	commandCtx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
 	cmd := exec.CommandContext(commandCtx, "git", gitArgs(args)...)
@@ -753,7 +765,8 @@ func retryableNetworkMessage(message string) bool {
 }
 
 func (c *Client) run(ctx context.Context, dir string, args ...string) (string, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
+	timeout := c.timeout()
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(commandCtx, "git", gitArgs(args)...)
@@ -764,7 +777,7 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 	text := strings.TrimSpace(string(out))
 	if commandCtx.Err() != nil {
 		if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
-			return text, fmt.Errorf("%w: git %s after %s", errGitCommandTimeout, strings.Join(args, " "), c.commandTimeout)
+			return text, fmt.Errorf("%w: git %s after %s", errGitCommandTimeout, strings.Join(args, " "), timeout)
 		}
 		if errors.Is(commandCtx.Err(), context.Canceled) {
 			return text, fmt.Errorf("%w: git %s", errGitCommandCanceled, strings.Join(args, " "))
@@ -798,7 +811,7 @@ func gitArgs(args []string) []string {
 // GarbageCollect 合并松散对象并清掉不可达对象，用于控制 .git 体积。
 // 这一步可能比普通命令慢得多，因此单独放宽超时。
 func (c *Client) GarbageCollect(ctx context.Context, path string) error {
-	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout*3)
+	commandCtx, cancel := context.WithTimeout(ctx, c.timeout()*3)
 	defer cancel()
 
 	cmd := exec.CommandContext(commandCtx, "git", gitArgs([]string{"gc", "--prune=now"})...)

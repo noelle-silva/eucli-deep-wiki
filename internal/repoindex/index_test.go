@@ -213,3 +213,21 @@ func TestEffectiveHistoryFallsBackToDefault(t *testing.T) {
 		t.Fatalf("EffectiveHistory() = %q", got)
 	}
 }
+
+func TestLoadAcceptsUTF8BOM(t *testing.T) {
+	t.Parallel()
+
+	body := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"repositories":[{"name":"example","url":"https://github.com/example/example.git"}]}`)...)
+	path := filepath.Join(t.TempDir(), "repositories.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	index, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(index.Repositories) != 1 {
+		t.Fatalf("Repositories = %#v", index.Repositories)
+	}
+}

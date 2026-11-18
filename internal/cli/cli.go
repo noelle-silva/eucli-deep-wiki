@@ -17,8 +17,8 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
 本地命令:
   serve [--service-config 路径] [--http-address 地址] [--once]
       启动同步与查询服务；--once 只同步一轮后退出
-  repo add [--service-config 路径] <git-url>...
-      把仓库加入索引
+  repo add [--service-config 路径] [--no-reload] <git-url>...
+      把仓库加入索引；默认顺便让运行中的服务立刻加载
   repo list [--service-config 路径] [--json]
       查看索引中的仓库
   repo unblock <仓库>              解除体积保护或远端消失标记，恢复同步
@@ -28,6 +28,7 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
 查询命令（需要先配置服务地址与 key）:
   repos [参数]                    列出服务器上的仓库
   status [参数]                   查看同步状态
+  reload [参数]                   让服务立刻重载配置与索引
   get [参数] <仓库> <路径>        读取文件内容
   tree [参数] <仓库> [目录]       列出目录
   search [参数] <仓库> <关键词>   按内容检索（逐文件扫描）
@@ -103,6 +104,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRepos(rest, stdout, stderr)
 	case "status":
 		return runStatus(rest, stdout, stderr)
+	case "reload":
+		return runReload(rest, stdout, stderr)
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "config":

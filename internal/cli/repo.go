@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"eucli-deep-wiki/internal/apiclient"
 	"eucli-deep-wiki/internal/config"
 	"eucli-deep-wiki/internal/gitops"
 	"eucli-deep-wiki/internal/repoindex"
@@ -49,7 +50,8 @@ func printRepoUsage(out io.Writer) {
 	fmt.Fprint(out, `用法: eucli-dw repo <子命令> [参数]
 
 子命令:
-  add <git-url>...       把仓库加入索引
+  add <git-url>...       把仓库加入索引，并通知运行中的服务立刻加载
+                         --no-reload 只写索引，不通知服务
   list                   查看索引中的仓库
   unblock <仓库>          解除体积保护或远端消失标记，恢复同步
   check [仓库]...         探测远端是否还在，不带仓库名时检查索引里的全部仓库
@@ -62,6 +64,7 @@ func runRepoAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	serviceConfig := flags.String("service-config", defaultServiceConfig(), "服务配置文件路径")
+	noReload := flags.Bool("no-reload", false, "写入索引后不通知正在运行的服务重载")
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -69,7 +72,7 @@ func runRepoAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	urls := collectURLs(flags.Args())
 	if len(urls) == 0 {
-		fmt.Fprintln(stderr, "用法: eucli-dw repo add [--service-config 路径] <git-url>...")
+		fmt.Fprintln(stderr, "用法: eucli-dw repo add [--service-config 路径] [--no-reload] <git-url>...")
 		return 2
 	}
 
@@ -99,7 +102,40 @@ func runRepoAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 	for _, repository := range added {
 		fmt.Fprintf(stdout, "added %s %s\n", repository.Name, repository.URL)
 	}
+
+	if !*noReload {
+		notifyReload(cfg, stdout, stderr)
+	}
 	return 0
+}
+
+// notifyReload 让正在运行的服务立刻重新读取索引。
+//
+// 服务不可达或重载失败都不算命令失败：索引已经写在盘上，
+// 服务在下一轮同步开始前会自己发现文件变了。两种情况都只说清事实，
+// 退出码保持 0。
+func notifyReload(cfg *config.Config, stdout io.Writer, stderr io.Writer) {
+	client, err := apiclient.New("http://"+serviceAddress(cfg.HTTPAddress), cfg.APIKeys[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "提示: %v，已写入索引，服务将在下一轮同步前自动加载\n", err)
+		return
+	}
+
+	result, err := client.Reload(context.Background())
+	if err != nil {
+		if isNetworkError(err) {
+			fmt.Fprintf(stderr, "提示: 服务不可达（%v），已写入索引，服务将在下一轮同步前自动加载\n", err)
+			return
+		}
+		fmt.Fprintf(stderr, "提示: 服务未接受重载请求（%v），已写入索引，服务将在下一轮同步前自动加载\n", err)
+		return
+	}
+
+	if !result.IndexReloaded {
+		fmt.Fprintf(stderr, "提示: 服务未加载新索引（%s），已写入索引，服务将在下一轮同步前自动加载\n", result.Error)
+		return
+	}
+	fmt.Fprintf(stdout, "reloaded %d\n", result.Repositories)
 }
 
 func runRepoList(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -277,7 +313,7 @@ func runRepoCompact(args []string, stdout io.Writer, stderr io.Writer) int {
 		wanted[name] = struct{}{}
 	}
 
-	client := gitops.New(cfg.RepositoryDir(), cfg.GitCommandTimeoutDuration)
+	client := gitops.New(cfg.RepositoryDir(), gitops.FixedTimeout(cfg.GitCommandTimeoutDuration))
 	compacted := 0
 	skipped := 0
 

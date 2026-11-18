@@ -137,6 +137,18 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 			Action string `json:"action"`
 			Error  string `json:"error"`
 		} `json:"singleResults"`
+		ConfigLoadedAt  string   `json:"configLoadedAt"`
+		IndexLoadedAt   string   `json:"indexLoadedAt"`
+		RepositoryCount int      `json:"repositoryCount"`
+		SyncInterval    string   `json:"syncInterval"`
+		GCThresholdMB   int      `json:"gcThresholdMB"`
+		NeedsRestart    []string `json:"needsRestart"`
+		LastReload      struct {
+			At             string `json:"at"`
+			ConfigReloaded bool   `json:"configReloaded"`
+			IndexReloaded  bool   `json:"indexReloaded"`
+			Error          string `json:"error"`
+		} `json:"lastReload"`
 	}
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		fmt.Fprintf(stderr, "解析状态失败: %v\n", err)
@@ -158,6 +170,11 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 		fmt.Fprintf(stdout, "上轮结束: %s\n", orDash(snapshot.LastFinishedAt))
 		fmt.Fprintf(stdout, "下轮预计: %s\n", orDash(snapshot.NextRunAt))
 	}
+
+	fmt.Fprintf(stdout, "仓库数:   %d\n", snapshot.RepositoryCount)
+	fmt.Fprintf(stdout, "同步周期: %s\n", orDash(snapshot.SyncInterval))
+	fmt.Fprintf(stdout, "配置加载: %s\n", orDash(snapshot.ConfigLoadedAt))
+	fmt.Fprintf(stdout, "索引加载: %s\n", orDash(snapshot.IndexLoadedAt))
 
 	counts := map[string]int{}
 	failures := []string{}
@@ -188,7 +205,33 @@ func renderStatus(stdout io.Writer, stderr io.Writer, raw json.RawMessage) int {
 			fmt.Fprintf(stdout, "  %s\n", line)
 		}
 	}
+
+	fmt.Fprintf(stdout, "最近重载: %s\n", formatReload(snapshot.LastReload.At, snapshot.LastReload.ConfigReloaded, snapshot.LastReload.IndexReloaded, snapshot.LastReload.Error))
+	if len(snapshot.NeedsRestart) > 0 {
+		fmt.Fprintf(stdout, "需要重启: %s（改在配置文件里，重启服务后才生效）\n", strings.Join(snapshot.NeedsRestart, ", "))
+	}
 	return 0
+}
+
+// formatReload 描述最近一次重载的结果；失败时把原因一并写出。
+func formatReload(at string, configReloaded bool, indexReloaded bool, reloadError string) string {
+	if reloadError != "" {
+		return "失败（" + reloadError + "）"
+	}
+	if at == "" {
+		return "-"
+	}
+	parts := make([]string, 0, 2)
+	if configReloaded {
+		parts = append(parts, "配置")
+	}
+	if indexReloaded {
+		parts = append(parts, "索引")
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return "成功（" + strings.Join(parts, "+") + "）"
 }
 
 // printBlocked 列出因体积保护停止同步的仓库。
