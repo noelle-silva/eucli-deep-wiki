@@ -247,13 +247,12 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /v1/repos` | 仓库清单，含分支与当前提交号 |
+| `GET /v1/repos` | 仓库清单：分支、提交、浅克隆、上次同步时间、体积、保护状态 |
 | `GET /v1/repos/{name}` | 单个仓库的元数据 |
-| `GET /v1/repos/{name}/tree?path=` | 目录树，目录优先，隐藏 `.git` |
-| `GET /v1/repos/{name}/file?path=` | 读取文本文件 |
-| `GET /v1/repos/{name}/search?q=&limit=` | 按行子串检索 |
-| `GET /v1/repos/{name}/search?q=&path=&offset=` | 限定目录并翻页 |
-| `GET /v1/repos/{name}/find?name=&path=&limit=&offset=` | 按文件名查找，支持通配与翻页 |
+| `GET /v1/repos/{name}/tree?path=&depth=&dirsOnly=` | 目录树，目录优先，隐藏 `.git`；`depth` 一次展开多层 |
+| `GET /v1/repos/{name}/file?path=&lines=&maxBytes=` | 读取文本文件，可按行切段、按字节限长 |
+| `GET /v1/repos/{name}/search?q=&path=&offset=&limit=&context=` | 按行子串检索：限定目录、翻页、带上下文行 |
+| `GET /v1/repos/{name}/find?name=&path=&match=&limit=&offset=` | 按文件名查找：默认精确，`match=substring` 改为包含 |
 | `GET /v1/repos/{name}/archive?path=&path=` | 快照打包，`path` 可重复，留空为整仓 |
 | `GET /v1/archive?include=仓库:路径&include=…` | 跨仓库或多目标打包 |
 | `GET /v1/repos/{name}/bundle` | 带完整历史的 `git bundle` |
@@ -270,13 +269,17 @@ eucli-dw sync <仓库>      # 立刻同步这一个
 eucli-dw sync --all       # 立刻跑一轮全量
 ```
 
-`find` 只按文件名匹配，不读文件内容。`name` 含 `*`、`?`、`[` 时按通配处理，否则按不区分大小写的子串匹配；`path` 限定目录，`offset` 跳过前面的命中，`limit` 默认 200、单次上限 10000，超过上限按 10000 处理。结果里的 `entries` 每项含 `name`、`path`、`type`、`size`；`scannedFiles` 是遍历过的文件数，`truncated` 表示还有未返回的命中。
+`find` 只按文件名匹配，不读文件内容。`name` 含 `*`、`?`、`[` 时按通配处理；否则默认要求文件名与 `name` **完全一致**（不区分大小写），要换成「包含即可」用 `match=substring`。`path` 是检索范围——遍历从该目录开始，不是在结果里过滤；`offset` 跳过前面的命中，`limit` 默认 200、单次上限 10000，超过上限按 10000 处理。结果里的 `entries` 每项含 `name`、`path`、`type`、`size`；`scannedFiles` 是遍历过的文件数，`truncated` 表示还有未返回的命中。
+
+精确匹配落空时，`eucli-dw find` 会按「包含」口径再查一次：确实有包含匹配就在 stderr 报出数量与示例路径，提示加 `--substring`。通配符模式、正在翻页、或已经传了 `--substring` 时不做这次附加查询；附加查询失败也不影响原本的空结果。
 
 ```sh
 curl "http://127.0.0.1:9997/v1/repos/claw-code/find?name=*.md&path=docs&limit=20"
 ```
 
-`search` 结果里的 `scannedBytes` 是实际读取的字节数（跳过的二进制文件也计入），`scannedFiles` 是实际参与匹配的文本文件数。
+`search` 结果里的 `scannedBytes` 是实际读取的字节数（跳过的二进制文件也计入），`scannedFiles` 是实际参与匹配的文本文件数。`context` 让每处命中带上前后各若干行（单处上限 10），命中项的 `before` / `after` 给出这些行的行号与原文。
+
+超过单文件上限的文件不参与检索，它们会被列在 `oversizedFiles` 里，`oversizedFilesCount` 是总数（明细最多 20 条）。这样「大文件没搜」不会被误读成「大文件里没命中」。
 
 `check` 直接对远端执行一次 `git ls-remote`，只判断远端是否还在，不读取、不改动本地仓库，也不改动同步状态。返回 `{"repo":"…","reachable":true}`；不可达时 `reachable` 为 `false`，并带上 `error`。仓库不在索引中时返回 `404 repo_not_found`。
 
@@ -298,13 +301,31 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/file?path=README.md"
 curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 ```
 
-文件响应带三个头，便于判断内容是否变化：
+文件响应的头分两类：一类判断内容有没有变化，一类说明「这次给的是哪一段」。
 
 | 响应头 | 含义 |
 | --- | --- |
-| `ETag` | 内容的 SHA-256 摘要，请求带 `If-None-Match` 命中时返回 `304` |
+| `ETag` | 整份内容的 SHA-256 摘要，请求带 `If-None-Match` 命中时返回 `304` |
 | `Last-Modified` | 文件修改时间 |
 | `X-Repo-Revision` | 该仓库当前的提交号 |
+| `X-File-Total-Lines` | 文件总行数 |
+| `X-File-First-Line` / `X-File-Last-Line` | 本次正文覆盖的行范围（1 基，含）；空正文时 `FirstLine > LastLine` |
+| `X-File-Size` / `X-File-Bytes` | 文件总字节数 / 本次返回的字节数 |
+| `X-File-Truncated` | 正文不完整的原因，目前只有 `bytes`（被 `maxBytes` 截断） |
+
+`lines` 与 `maxBytes` 的写法：
+
+| 写法 | 含义 |
+| --- | --- |
+| `lines=362-520` | 第 362 到 520 行 |
+| `lines=362-` | 第 362 行到末尾 |
+| `lines=-520` | 首行到第 520 行 |
+| `lines=362` | 仅第 362 行 |
+| `maxBytes=4096` | 最多 4096 字节，超出时退到最后一个完整行，绝不返回半行残句 |
+
+`ETag` 描述的是整份文件，因此「同一文件的不同行区间」拿到的是同一个 `ETag`：它回答的是「文件变没变」，不是「这一段变没变」。
+
+读取与检索对大文件的容忍度不同，这是两个独立的上限：单次读取允许到 16 MiB（配合 `lines` 能从几 MiB 的打包产物里取一段），内容检索的单文件上限是 1 MiB——检索要扫全仓，不能为一个大文件拖住整轮；被跳过的文件会列在 `oversizedFiles` 里。
 
 边界处理都是明确报错，不做静默兜底：
 
@@ -314,10 +335,14 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 | 仓库不存在或尚未同步 | `404 repo_not_found` |
 | 路径不存在 | `404 path_not_found` |
 | 目标不是普通文件 | `400 not_a_file` |
-| 文件超过 1 MiB | `413 file_too_large` |
+| 文件超过 16 MiB（单次读取上限，可用 `lines` 只取一段） | `413 file_too_large` |
 | 文件不是 UTF-8 文本 | `415 not_text` |
 | 检索词为空 | `400 query_required` |
-| 文件名为空 | `400 name_required` |
+| 文件名为空或通配语法不合法 | `400 name_required` |
+| 行区间写法不合法 | `400 invalid_lines` |
+| 布尔参数不是合法布尔值 | `400 invalid_flag` |
+| `maxBytes` 不是非负整数 | `400 invalid_bytes` |
+| `match` 不是 `exact` / `substring` | `400 invalid_match` |
 
 所有路径都经 `os.Root` 收敛，符号链接无法把访问带出仓库；目录树、检索与查找都会跳过 `.git`。
 
@@ -332,11 +357,12 @@ eucli-dw repo list [--service-config 路径] [--json]
 eucli-dw repo check [--service-config 路径] [仓库]...
 eucli-dw repo unblock [--service-config 路径] <仓库>
 
-eucli-dw get [参数] <仓库> <路径>
-eucli-dw tree [参数] <仓库> [目录]
-eucli-dw search [参数] <仓库> <关键词>   --path 限定目录，--offset 翻页
-eucli-dw find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配；--offset 翻页，--limit 默认 200、上限 10000
-eucli-dw repos [--json]             列出服务器上的仓库与提交号
+eucli-dw repos [--sort name|time|size] [--json]
+eucli-dw overview [参数] <仓库>            目录骨架 + README 开头 + 清单文件
+eucli-dw get [参数] <仓库> <路径>...       可多路径；--lines 切段，--max-bytes 限长
+eucli-dw tree [参数] <仓库> [目录]         --depth 一次展开多层，--dirs-only 只看骨架
+eucli-dw search [参数] <仓库> <关键词>     --path 限目录，--context 上下文行，--offset 翻页
+eucli-dw find [参数] <仓库> <文件名>       默认精确；--substring 改为包含；支持 * 通配
 eucli-dw status [--json]            查看同步状态
 eucli-dw reload [--json]            让服务立刻重载配置与索引
 eucli-dw sync [--json] <仓库> | sync --all [--json]
@@ -354,9 +380,15 @@ eucli-dw cache list | cache clean [--yes]
 
 `repo check` 逐个探测索引里的仓库（也可以只传仓库名）：远端可达输出 `可达`，不可达输出 `不可达` 与错误信息，索引里不存在的名字输出 `未知仓库`，最后给出汇总行。全部可达返回退出码 0，只要出现不可达或未知就返回 1；`--json` 输出 `{checked, reachable, unreachable, unknown, results[]}`。探测并发进行，走本机服务，需要服务正在运行。
 
-`repo list` 与 `repos` 会在仓库名后追加 `MISSING`，表示该仓库的远端已被判定不可用；`repo list` 读本地状态文件，`repos` 读服务端状态。
+`repos` 一行一个仓库，列依次是：仓库名、分支、提交号前 12 位、上次同步时间、`.git` 体积，随后是状态标记（`BLOCKED(大小)` / `MISSING` / `SHALLOW`）。这些字段由服务端一次返回，不必再单独查状态接口。`--sort` 可以按名字（默认）、最近同步时间或体积排序，同值一律按名字升序，输出可复现。
 
-`find --limit` 超过上限时按 10000 处理，文本模式的结果截断提示会写明该上限。
+`repo list` 是本地命令：直接读索引与状态文件，输出仓库名、分支、地址，`--sizes` 时附带 `.git` 体积，并追加 `MISSING` / `BLOCKED` 标记。它不需要服务在跑，服务没启动时也能用。
+
+`overview` 是「先看仓库长什么样」的入口：一次请求拿到元数据与目录骨架，随后并发取回 README 开头与清单文件（`go.mod`、`package.json`、`Cargo.toml` 等），把原先需要 `tree` + 多次 `get` 的往返压成一条命令。`--depth`、`--readme-lines`、`--manifests`、`--manifest-lines` 控制展开规模。
+
+`find --limit` 超过上限时按 10000 处理，文本模式的截断提示会写明该上限。
+
+**查询命令的输出约定**：stdout 只放数据（条目、正文、清单行），关于这批数据的说明——截断、还有更多、跳过了哪些大文件、参数按上限收敛——一律写 stderr。因此 `eucli-dw tree repo --depth 2 | wc -l` 这类管道不会被提示行干扰。`--json` 把所有事实放进结构化字段，不依赖 stderr。
 
 `sync <仓库> --json` 输出该仓库的 `name`、`action`、`durationMs`、`error`；`sync --all --json` 输出 `{"status":"started"}`。同步失败时退出码非零，错误同时以 `{"ok":false,...}` 写入 stderr。文本模式的输出保持不变。
 
@@ -399,7 +431,22 @@ eucli-dw config set key 0123456789abcdef
 eucli-dw get claw-code README.md
 eucli-dw tree claw-code docs
 eucli-dw search claw-code subagent --limit 5
-eucli-dw get claw-code README.md --json     # 带提交号的 JSON
+eucli-dw get claw-code README.md --json     # 带提交号与行范围的 JSON
+
+# 一次看两三层的骨架，不必逐层剥
+eucli-dw tree claw-code --depth 2 --dirs-only
+
+# 只看某个函数附近，不需要整份 cli.js
+eucli-dw get claw-code cli.js --lines 362-520
+
+# 多个路径一次取回，按位置参数顺序输出
+eucli-dw get claw-code README.md src/index.ts --max-bytes 4096
+
+# 检索时带上下文，并把超大文件被跳过的事实说出来
+eucli-dw search claw-code subagent --context 2 --limit 20
+
+# 先看仓库长什么样
+eucli-dw overview claw-code
 ```
 
 `repos`、`status` 与 `reload` 是客户端命令，只走网络；`status` 至少给出运行状态、上轮结果统计、下一轮预计时间、仓库数、同步周期、配置与索引的加载时间、最近一次重载结果，以及需要重启才能生效的字段；`reload` 打印服务端的重载结果，失败时退出码为 1。
