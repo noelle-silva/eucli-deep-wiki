@@ -14,5 +14,5 @@ if not errorlevel 1 (
 echo [eucli] 启动 %EUCLI_EXE%
 echo [eucli] 配置 %CFG_PATH%
 echo [eucli] 日志 %LOG_FILE%
-powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%EXE_PATH%' -ArgumentList 'serve','--service-config','%CFG_PATH%' -WindowStyle Hidden -RedirectStandardOutput '%LOG_FILE%.out' -RedirectStandardError '%LOG_FILE%'"
+powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%EXE_PATH%' -ArgumentList 'serve','--service-config','%CFG_PATH%' -WorkingDirectory '%EUCLI_DEPLOY_DIR%' -WindowStyle Hidden -RedirectStandardOutput '%LOG_FILE%.out' -RedirectStandardError '%LOG_FILE%'"
 exit /b 0
