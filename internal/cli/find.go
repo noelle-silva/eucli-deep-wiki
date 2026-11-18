@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"eucli-deep-wiki/internal/apiclient"
+	"eucli-deep-wiki/internal/vault"
 )
 
 // runFind 按文件名检索，不读文件内容，因此比内容检索快得多。
@@ -17,7 +18,7 @@ func runFind(args []string, stdout io.Writer, stderr io.Writer) int {
 	options := &clientFlags{}
 	options.register(flags, true)
 	searchPath := flags.String("path", "", "只在指定目录内查找")
-	limit := flags.Int("limit", 0, "最多返回多少条结果")
+	limit := flags.Int("limit", vault.DefaultFindLimit, fmt.Sprintf("最多返回多少条结果，上限 %d", vault.MaxFindLimit))
 	offset := flags.Int("offset", 0, "跳过前多少条结果，用于翻页")
 
 	if err := parseArgs(flags, args); err != nil {
@@ -54,7 +55,13 @@ func runFind(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s\t%d\n", entry.Path, entry.Size)
 	}
 	if result.Truncated {
-		fmt.Fprintf(stdout, "（还有更多结果，可用 --offset %d 继续；已检查 %d 个文件）\n", result.Offset+len(result.Entries), result.Scanned)
+		effective := vault.NormalizeFindLimit(*limit)
+		limitNote := fmt.Sprintf("本次最多返回 %d 条，单次最多返回 %d 条", effective, vault.MaxFindLimit)
+		if *limit > vault.MaxFindLimit {
+			limitNote = fmt.Sprintf("单次最多返回 %d 条，--limit 已按上限处理", vault.MaxFindLimit)
+		}
+		fmt.Fprintf(stdout, "（还有更多结果，可用 --offset %d 继续；已检查 %d 个文件；%s）\n",
+			result.Offset+len(result.Entries), result.Scanned, limitNote)
 	}
 	return 0
 }

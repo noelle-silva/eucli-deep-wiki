@@ -21,7 +21,8 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
       把仓库加入索引
   repo list [--service-config 路径] [--json]
       查看索引中的仓库
-  repo unblock <仓库>              解除体积保护，恢复同步
+  repo unblock <仓库>              解除体积保护或远端消失标记，恢复同步
+  repo check [仓库]...             探测远端是否还在，默认检查全部仓库
   repo compact [仓库]...           就地转为浅克隆
 
 查询命令（需要先配置服务地址与 key）:
@@ -31,7 +32,8 @@ const usageText = `eucli-dw —— 参考仓库的同步与只读查询工具
   tree [参数] <仓库> [目录]       列出目录
   search [参数] <仓库> <关键词>   按内容检索（逐文件扫描）
   find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配
-  sync <仓库> | sync --all        立刻同步，不等定时轮
+  sync [--json] <仓库> | sync --all [--json]
+                                  立刻同步，不等定时轮
   pull <仓库>[:路径] ... [-o 文件]  下载快照包（zip / tar.gz）
   bundle <仓库> [-o 文件]         下载带历史的 bundle
 

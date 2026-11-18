@@ -33,12 +33,15 @@ var (
 )
 
 // Limits 控制单次请求的资源上限，避免一次请求扫穿整个仓库。
+//
+// SearchWorkers 是内容检索的并行度，其余字段都是「一口气最多处理多少」的上限。
 type Limits struct {
 	MaxFileBytes     int64
 	MaxTreeEntries   int
 	MaxSearchFiles   int
 	MaxSearchBytes   int64
 	MaxSearchResults int
+	SearchWorkers    int
 }
 
 // DefaultLimits 是面向阅读场景的保守取值。
@@ -49,6 +52,7 @@ func DefaultLimits() Limits {
 		MaxSearchFiles:   20000,
 		MaxSearchBytes:   64 << 20,
 		MaxSearchResults: 100,
+		SearchWorkers:    4,
 	}
 }
 

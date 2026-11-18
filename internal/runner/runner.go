@@ -22,7 +22,11 @@ type GitClient interface {
 	Sync(ctx context.Context, repo gitops.Repository) gitops.Result
 	GarbageCollect(ctx context.Context, path string) error
 	GitDirectorySize(path string) (int64, error)
+	ProbeRemote(ctx context.Context, url string) error
 }
+
+// 远端连续失败到这一次数后，判定仓库的远端已经消失。
+const remoteMissingThreshold = 3
 
 type Runner struct {
 	cfg   *config.Config
@@ -105,6 +109,7 @@ func (r *Runner) release() {
 
 func (r *Runner) runCycle(ctx context.Context) error {
 	startedAt := time.Now()
+	r.reloadState()
 	r.store.Begin(startedAt, len(r.repos))
 	defer func() { r.store.Finish(time.Now()) }()
 
@@ -178,15 +183,7 @@ var (
 
 // SyncOne 立刻同步指定仓库，供按需拉取使用。
 func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error) {
-	var target repoindex.Repository
-	found := false
-	for _, repo := range r.repos {
-		if repo.Name == name {
-			target = repo
-			found = true
-			break
-		}
-	}
+	target, found := r.find(name)
 	if !found {
 		return gitops.Result{}, ErrRepoNotManaged
 	}
@@ -198,26 +195,71 @@ func (r *Runner) SyncOne(ctx context.Context, name string) (gitops.Result, error
 		return gitops.Result{}, ErrSyncBusy
 	}
 
+	r.reloadState()
 	result := r.syncOne(ctx, target)
 	logResult(result)
 	r.store.RecordSingle(result)
 	return result, nil
 }
 
-// syncOne 处理单个仓库：先看是否被体积保护拦下，再同步，最后守卫体积。
+// reloadState 重新读取状态文件。
+//
+// repo unblock 由命令行直接改盘，服务这边只有重新加载才能让「已解除」生效。
+func (r *Runner) reloadState() {
+	if err := r.state.Reload(); err != nil {
+		log.Printf("reload sync state: %v", err)
+	}
+}
+
+// RemoteStatus 是一次远端可达性探测的结果。
+type RemoteStatus struct {
+	Repo      string `json:"repo"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+}
+
+// CheckRemote 只探测远端是否可达，不改动本地仓库，也不改动同步状态。
+func (r *Runner) CheckRemote(ctx context.Context, name string) (RemoteStatus, error) {
+	target, found := r.find(name)
+	if !found {
+		return RemoteStatus{}, ErrRepoNotManaged
+	}
+
+	status := RemoteStatus{Repo: target.Name}
+	if err := r.git.ProbeRemote(ctx, target.URL); err != nil {
+		status.Error = err.Error()
+		return status, nil
+	}
+	status.Reachable = true
+	return status, nil
+}
+
+// find 按名字在索引里查仓库。
+func (r *Runner) find(name string) (repoindex.Repository, bool) {
+	for _, repo := range r.repos {
+		if repo.Name == name {
+			return repo, true
+		}
+	}
+	return repoindex.Repository{}, false
+}
+
+// syncOne 处理单个仓库：先看是否被拦下，再同步；失败计入状态，成功清零并守卫体积。
 func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.Result {
 	repoPath := filepath.Join(r.cfg.RepositoryDir(), repo.Name)
+	current := r.state.Get(repo.Name)
 
-	if blocked := r.state.Get(repo.Name); blocked.Blocked {
-		return gitops.Result{
-			Name:       repo.Name,
-			URL:        repo.URL,
-			Path:       repoPath,
-			Action:     "blocked",
-			Error:      fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(blocked.BlockedSize), r.cfg.SizeLimitMB),
-			StartedAt:  time.Now(),
-			FinishedAt: time.Now(),
-		}
+	if current.Blocked {
+		return skipResult(repo, repoPath, "blocked", fmt.Sprintf(
+			"体积已达 %s，超过上限 %d MB，已停止自动同步",
+			humanMB(current.BlockedSize), r.cfg.SizeLimitMB,
+		))
+	}
+	if current.RemoteMissing {
+		return skipResult(repo, repoPath, "missing", fmt.Sprintf(
+			"远端仓库不可用（%s 起连续 %d 次失败后判定），已跳过同步；确认远端恢复后执行 repo unblock 解除",
+			current.RemoteMissingAt.Format(time.RFC3339), current.ConsecutiveFailures,
+		))
 	}
 
 	history := repo.EffectiveHistory(r.cfg.DefaultHistory)
@@ -228,11 +270,64 @@ func (r *Runner) syncOne(ctx context.Context, repo repoindex.Repository) gitops.
 		Shallow: history != repoindex.HistoryFull,
 	})
 	if result.Error != "" {
+		r.recordFailure(repo, result)
 		return result
 	}
 
+	r.recordSuccess(repo)
 	r.applySizeGuard(ctx, repo, repoPath, &result)
 	return result
+}
+
+// skipResult 构造一个「本轮没有真正同步」的结果。
+func skipResult(repo repoindex.Repository, repoPath string, action string, reason string) gitops.Result {
+	now := time.Now()
+	return gitops.Result{
+		Name:       repo.Name,
+		URL:        repo.URL,
+		Path:       repoPath,
+		Action:     action,
+		Error:      reason,
+		StartedAt:  now,
+		FinishedAt: now,
+	}
+}
+
+// recordFailure 累加连续失败次数并记下最近一次错误；
+// 远端不可用的失败连续攒够次数后，判定仓库的远端已经消失。
+func (r *Runner) recordFailure(repo repoindex.Repository, result gitops.Result) {
+	err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
+		current.ConsecutiveFailures++
+		current.LastError = result.Error
+		if result.RemoteUnavailable && current.ConsecutiveFailures >= remoteMissingThreshold {
+			current.RemoteMissing = true
+			current.RemoteMissingAt = time.Now()
+		}
+		return current
+	})
+	if err != nil {
+		log.Printf("repo=%s persist failure state: %v", repo.Name, err)
+	}
+}
+
+// recordSuccess 清零连续失败次数并解除远端消失标记。
+// 没有可清的状态时不写盘，避免每轮同步都为每个仓库重写状态文件。
+func (r *Runner) recordSuccess(repo repoindex.Repository) {
+	current := r.state.Get(repo.Name)
+	if current.ConsecutiveFailures == 0 && current.LastError == "" && !current.RemoteMissing && current.RemoteMissingAt.IsZero() {
+		return
+	}
+
+	err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
+		current.ConsecutiveFailures = 0
+		current.LastError = ""
+		current.RemoteMissing = false
+		current.RemoteMissingAt = time.Time{}
+		return current
+	})
+	if err != nil {
+		log.Printf("repo=%s persist success state: %v", repo.Name, err)
+	}
 }
 
 // applySizeGuard 在同步完成后检查 .git 体积：

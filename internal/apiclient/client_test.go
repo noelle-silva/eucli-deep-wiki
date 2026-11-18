@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -139,5 +140,67 @@ func TestNewRejectsInvalidServer(t *testing.T) {
 		if _, err := New(value, testKey); err == nil {
 			t.Fatalf("New(%q) error = nil, want error", value)
 		}
+	}
+}
+
+func TestCheckRepoSendsProbe(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/v1/repos/example/check" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+testKey {
+			t.Errorf("Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"repo":      "example",
+			"reachable": false,
+			"error":     "remote repository unavailable: Repository not found",
+		})
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	status, err := client.CheckRepo(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("CheckRepo() error = %v", err)
+	}
+	if status.Repo != "example" || status.Reachable {
+		t.Fatalf("status = %#v", status)
+	}
+	if !strings.Contains(status.Error, "Repository not found") {
+		t.Fatalf("Error = %q", status.Error)
+	}
+}
+
+func TestCheckRepoMapsMissingRepository(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"repo_not_found","message":"仓库不存在或尚未同步"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.CheckRepo(context.Background(), "nope")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound || apiErr.Code != "repo_not_found" {
+		t.Fatalf("apiErr = %#v", apiErr)
 	}
 }

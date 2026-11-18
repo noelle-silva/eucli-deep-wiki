@@ -2,8 +2,10 @@ package vault
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -308,5 +310,238 @@ func TestFindRejectsEmptyPattern(t *testing.T) {
 
 	if _, err := v.Find("example", FindOptions{Pattern: "  "}); !errors.Is(err, ErrInvalidName) {
 		t.Fatalf("Find() error = %v, want ErrInvalidName", err)
+	}
+}
+
+func TestSearchReportsUnknownRepositoryAndMissingPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "example/README.md", "needle\n")
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := v.Search("missing", SearchOptions{Query: "needle"}); !errors.Is(err, ErrRepoNotFound) {
+		t.Fatalf("Search(unknown repo) error = %v, want ErrRepoNotFound", err)
+	}
+	if _, err := v.Search("example", SearchOptions{Query: "needle", Path: "nodir"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Search(unknown path) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSearchSkipsOversizedAndBinaryFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	writeRepoFile(t, dir, "docs/ok.md", "needle here\n")
+	writeRepoFile(t, dir, "docs/big.md", strings.Repeat("needle ", 400))
+	writeRepoBytes(t, dir, "docs/blob.bin", []byte("needle\x00binary"))
+
+	limits := DefaultLimits()
+	limits.MaxFileBytes = 512
+	v, err := New(root, []string{"example"}, limits)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := v.Search("example", SearchOptions{Query: "needle"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Path != "docs/ok.md" {
+		t.Fatalf("matches = %#v", result.Matches)
+	}
+	if result.Scanned != 1 {
+		t.Fatalf("Scanned = %d, want 1", result.Scanned)
+	}
+}
+
+func TestSearchStopsAtByteBudget(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	line := "needle" + strings.Repeat("x", 93) + "\n"
+	for index := range 5 {
+		writeRepoFile(t, dir, fmt.Sprintf("docs/%d.md", index), line)
+	}
+
+	limits := DefaultLimits()
+	limits.MaxSearchBytes = 250
+	v, err := New(root, []string{"example"}, limits)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := v.Search("example", SearchOptions{Query: "needle"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("超过字节预算后应标记截断")
+	}
+	// 每个文件 100 字节：读到第 3 个文件时累计 300 字节，越过 250 字节的预算。
+	if result.Scanned != 3 {
+		t.Fatalf("Scanned = %d, want 3", result.Scanned)
+	}
+	if want := int64(3 * len(line)); result.ScannedBytes != want {
+		t.Fatalf("ScannedBytes = %d, want %d", result.ScannedBytes, want)
+	}
+}
+
+func TestSearchStopsAtFileBudget(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	for index := range 4 {
+		writeRepoFile(t, dir, fmt.Sprintf("docs/%d.md", index), "needle\n")
+	}
+
+	limits := DefaultLimits()
+	limits.MaxSearchFiles = 2
+	v, err := New(root, []string{"example"}, limits)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := v.Search("example", SearchOptions{Query: "needle"})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("达到文件数上限后应标记截断")
+	}
+	if result.Scanned != 2 {
+		t.Fatalf("Scanned = %d, want 2", result.Scanned)
+	}
+}
+
+func TestSearchIsDeterministicAndSorted(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	for index := range 20 {
+		writeRepoFile(t, dir, fmt.Sprintf("docs/%02d.md", index), "needle one\nfiller\nneedle two\n")
+	}
+	writeRepoFile(t, dir, "docs.md", "needle outside directory\n")
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	options := SearchOptions{Query: "needle", Limit: 5}
+	first, err := v.Search("example", options)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(first.Matches) != 5 || !first.Truncated {
+		t.Fatalf("first = %#v", first)
+	}
+	assertSortedMatches(t, first.Matches)
+
+	for range 10 {
+		again, err := v.Search("example", options)
+		if err != nil {
+			t.Fatalf("Search() error = %v", err)
+		}
+		if !reflect.DeepEqual(first.Matches, again.Matches) {
+			t.Fatalf("两次检索结果不一致:\n%#v\n%#v", first.Matches, again.Matches)
+		}
+	}
+
+	// 翻页时残存的命中同样稳定：同一次查询多次执行完全一致。
+	page := SearchOptions{Query: "needle", Limit: 5, Offset: 3}
+	want, err := v.Search("example", page)
+	if err != nil {
+		t.Fatalf("Search(offset) error = %v", err)
+	}
+	for range 10 {
+		again, err := v.Search("example", page)
+		if err != nil {
+			t.Fatalf("Search(offset) error = %v", err)
+		}
+		if !reflect.DeepEqual(want.Matches, again.Matches) {
+			t.Fatalf("两次翻页结果不一致:\n%#v\n%#v", want.Matches, again.Matches)
+		}
+	}
+	assertSortedMatches(t, want.Matches)
+}
+
+func TestSearchKeepsTextOnlyForRequestedWindow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "example")
+	var body strings.Builder
+	for index := 1; index <= 10; index++ {
+		fmt.Fprintf(&body, "needle %d\n", index)
+	}
+	writeRepoFile(t, dir, "docs/list.md", body.String())
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := v.Search("example", SearchOptions{Query: "needle", Limit: 3, Offset: 6})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Matches) != 3 {
+		t.Fatalf("matches = %#v", result.Matches)
+	}
+	for index, match := range result.Matches {
+		wantLine := 7 + index
+		if match.Line != wantLine || match.Text != fmt.Sprintf("needle %d", wantLine) {
+			t.Fatalf("match[%d] = %#v, want line %d", index, match, wantLine)
+		}
+	}
+	if !result.Truncated {
+		t.Fatal("后面还有命中时应标记截断")
+	}
+}
+
+func TestSearchReturnsEmptyPageBeyondLastMatch(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "example/docs/a.md", "needle\n")
+
+	v, err := New(root, []string{"example"}, DefaultLimits())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := v.Search("example", SearchOptions{Query: "needle", Offset: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Matches) != 0 {
+		t.Fatalf("matches = %#v, want empty", result.Matches)
+	}
+	if result.Truncated {
+		t.Fatal("越过最后一条命中时不应标记截断")
+	}
+}
+
+func assertSortedMatches(t *testing.T, matches []Match) {
+	t.Helper()
+
+	for index := 1; index < len(matches); index++ {
+		previous := matches[index-1]
+		current := matches[index]
+		if previous.Path > current.Path {
+			t.Fatalf("命中未按路径升序: %q 在 %q 之前", previous.Path, current.Path)
+		}
+		if previous.Path == current.Path && previous.Line > current.Line {
+			t.Fatalf("同文件命中未按行号升序: %d 在 %d 之前", previous.Line, current.Line)
+		}
 	}
 }

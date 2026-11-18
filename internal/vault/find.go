@@ -36,9 +36,23 @@ type FindOptions struct {
 }
 
 const (
-	defaultFindLimit = 200
-	maxFindLimit     = 1000
+	// DefaultFindLimit 是请求未指定条数时使用的默认上限。
+	DefaultFindLimit = 200
+	// MaxFindLimit 是单次请求可以返回的结果数硬上限。
+	MaxFindLimit = 10000
 )
+
+// NormalizeFindLimit 把请求的条数收敛到默认值与硬上限之间。
+// HTTP 层与 Vault 共用这一规则，避免两处对 limit 的处理出现分歧。
+func NormalizeFindLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultFindLimit
+	}
+	if limit > MaxFindLimit {
+		return MaxFindLimit
+	}
+	return limit
+}
 
 // Find 只按文件名匹配，不读文件内容，因此比内容检索快得多。
 // 带通配符（* ? [）时按 glob 匹配，否则按子串匹配；两者都不区分大小写。
@@ -53,13 +67,7 @@ func (v *Vault) Find(name string, options FindOptions) (FindResult, error) {
 		return FindResult{}, err
 	}
 
-	limit := options.Limit
-	if limit <= 0 {
-		limit = defaultFindLimit
-	}
-	if limit > maxFindLimit {
-		limit = maxFindLimit
-	}
+	limit := NormalizeFindLimit(options.Limit)
 
 	root, err := v.open(name)
 	if err != nil {

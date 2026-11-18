@@ -63,8 +63,13 @@ func runRepos(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 
 		marker := ""
-		if state, ok := states[repository.Name]; ok && state.Blocked {
-			marker = fmt.Sprintf("\tBLOCKED(%d MB)", state.BlockedSize>>20)
+		if stateOfRepo, ok := states[repository.Name]; ok {
+			if stateOfRepo.RemoteMissing {
+				marker += "\tMISSING"
+			}
+			if stateOfRepo.Blocked {
+				marker += fmt.Sprintf("\tBLOCKED(%d MB)", stateOfRepo.BlockedSize>>20)
+			}
 		}
 		fmt.Fprintf(stdout, "%s\t%s\t%s%s\n", repository.Name, branch, revision, marker)
 	}

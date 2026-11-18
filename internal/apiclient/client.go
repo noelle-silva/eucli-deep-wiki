@@ -113,14 +113,15 @@ type Match struct {
 
 // SearchResult 是检索结果。
 type SearchResult struct {
-	Repo      string  `json:"repo"`
-	Revision  string  `json:"revision"`
-	Query     string  `json:"query"`
-	Path      string  `json:"path,omitempty"`
-	Offset    int     `json:"offset"`
-	Matches   []Match `json:"matches"`
-	Scanned   int     `json:"scannedFiles"`
-	Truncated bool    `json:"truncated"`
+	Repo         string  `json:"repo"`
+	Revision     string  `json:"revision"`
+	Query        string  `json:"query"`
+	Path         string  `json:"path,omitempty"`
+	Offset       int     `json:"offset"`
+	Matches      []Match `json:"matches"`
+	Scanned      int     `json:"scannedFiles"`
+	ScannedBytes int64   `json:"scannedBytes"`
+	Truncated    bool    `json:"truncated"`
 }
 
 // File 是文件读取结果。
@@ -320,6 +321,11 @@ type RepoState struct {
 	Blocked     bool   `json:"blocked,omitempty"`
 	BlockedAt   string `json:"blockedAt,omitempty"`
 	BlockedSize int64  `json:"blockedSize,omitempty"`
+
+	ConsecutiveFailures int    `json:"consecutiveFailures,omitempty"`
+	LastError           string `json:"lastError,omitempty"`
+	RemoteMissing       bool   `json:"remoteMissing,omitempty"`
+	RemoteMissingAt     string `json:"remoteMissingAt,omitempty"`
 }
 
 // Status 读取服务端同步状态快照，原样返回 JSON。
@@ -340,11 +346,28 @@ type SyncResult struct {
 	Duration int64  `json:"duration"`
 }
 
+// RemoteStatus 是一次远端可达性探测的结果。
+type RemoteStatus struct {
+	Repo      string `json:"repo"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+}
+
+// CheckRepo 让服务端探测一次远端可达性；探测不改动本地仓库。
+func (c *Client) CheckRepo(ctx context.Context, name string) (RemoteStatus, error) {
+	var status RemoteStatus
+	path := "/v1/repos/" + url.PathEscape(name) + "/check"
+	if err := c.post(ctx, c.http, path, &status); err != nil {
+		return RemoteStatus{}, err
+	}
+	return status, nil
+}
+
 // SyncRepo 触发单个仓库的立即同步。
 func (c *Client) SyncRepo(ctx context.Context, name string) (SyncResult, error) {
 	var result SyncResult
 	path := "/v1/repos/" + url.PathEscape(name) + "/sync"
-	if err := c.postSync(ctx, path, &result); err != nil {
+	if err := c.post(ctx, syncClient(), path, &result); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -352,10 +375,15 @@ func (c *Client) SyncRepo(ctx context.Context, name string) (SyncResult, error) 
 
 // SyncAll 触发一轮全量同步，服务端立即返回。
 func (c *Client) SyncAll(ctx context.Context) error {
-	return c.postSync(ctx, "/v1/sync", nil)
+	return c.post(ctx, syncClient(), "/v1/sync", nil)
 }
 
-func (c *Client) postSync(ctx context.Context, path string, out any) error {
+// syncClient 是同步类请求专用的客户端：单个大仓库的同步可能持续几分钟。
+func syncClient() *http.Client {
+	return &http.Client{Timeout: 15 * time.Minute}
+}
+
+func (c *Client) post(ctx context.Context, httpClient *http.Client, path string, out any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, nil)
 	if err != nil {
 		return err
@@ -363,9 +391,7 @@ func (c *Client) postSync(ctx context.Context, path string, out any) error {
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Accept", "application/json")
 
-	// 单个大仓库的同步可能持续几分钟，这里单独放宽超时。
-	client := &http.Client{Timeout: 15 * time.Minute}
-	response, err := client.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return err
 	}

@@ -15,12 +15,17 @@ type SyncTrigger interface {
 	StartSyncAll(ctx context.Context) error
 }
 
+// RemoteChecker 是对远端可达性探测能力的抽象。
+type RemoteChecker interface {
+	CheckRemote(ctx context.Context, name string) (runner.RemoteStatus, error)
+}
+
 func syncRepository(trigger SyncTrigger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 客户端断开不应中断已经开始的同步，否则仓库可能停在半路。
 		result, err := trigger.SyncOne(context.WithoutCancel(r.Context()), r.PathValue("name"))
 		if err != nil {
-			writeSyncError(w, err)
+			writeActionError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -30,14 +35,26 @@ func syncRepository(trigger SyncTrigger) http.HandlerFunc {
 func syncAllRepositories(trigger SyncTrigger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := trigger.StartSyncAll(context.WithoutCancel(r.Context())); err != nil {
-			writeSyncError(w, err)
+			writeActionError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 	}
 }
 
-func writeSyncError(w http.ResponseWriter, err error) {
+// checkRepository 只做一次远端探测，不改动本地仓库。
+func checkRepository(checker RemoteChecker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status, err := checker.CheckRemote(r.Context(), r.PathValue("name"))
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	}
+}
+
+func writeActionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, runner.ErrRepoNotManaged):
 		writeJSON(w, http.StatusNotFound, apiError{Code: "repo_not_found", Message: "仓库不存在或尚未同步"})

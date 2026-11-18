@@ -20,6 +20,7 @@ type Options struct {
 	Vault      *vault.Vault
 	Auth       *Authenticator
 	Sync       SyncTrigger
+	Remote     RemoteChecker
 	States     StateSource
 	CacheDir   string
 	GitTimeout time.Duration
@@ -50,6 +51,10 @@ func NewRouter(options Options) http.Handler {
 	if options.Sync != nil {
 		mux.Handle("POST /v1/repos/{name}/sync", options.Auth.Wrap(syncRepository(options.Sync)))
 		mux.Handle("POST /v1/sync", options.Auth.Wrap(syncAllRepositories(options.Sync)))
+	}
+
+	if options.Remote != nil {
+		mux.Handle("POST /v1/repos/{name}/check", options.Auth.Wrap(checkRepository(options.Remote)))
 	}
 
 	if options.States != nil {

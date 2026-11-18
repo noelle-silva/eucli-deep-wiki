@@ -256,6 +256,134 @@ func TestSyncRejectsNonDirectoryRoot(t *testing.T) {
 	}
 }
 
+func TestRemoteUnavailableMessage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{
+			name:    "仓库不存在",
+			message: "git ls-remote origin: exit status 128: remote: Repository not found.",
+			want:    true,
+		},
+		{
+			name:    "路径不是 git 仓库",
+			message: "git ls-remote origin: exit status 128: fatal: '/srv/gone.git' does not appear to be a git repository",
+			want:    true,
+		},
+		{
+			name:    "无法读取用户名",
+			message: "git fetch origin: exit status 128: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+			want:    true,
+		},
+		{
+			name:    "无法读取密码",
+			message: "git fetch origin: exit status 128: fatal: could not read Password for 'https://github.com': terminal prompts disabled",
+			want:    true,
+		},
+		{
+			name:    "网络中断",
+			message: "git fetch --prune origin: exit status 128: fatal: unable to access 'https://github.com/x/y.git/': Recv failure: Connection was aborted",
+			want:    false,
+		},
+		{
+			name:    "锁冲突",
+			message: "git fetch --prune origin: exit status 128: fatal: Unable to create '/repo/.git/index.lock': File exists.",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		if got := remoteUnavailableMessage(tc.message); got != tc.want {
+			t.Errorf("%s: remoteUnavailableMessage() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestClassifyRemoteUnavailableWrapsSentinel(t *testing.T) {
+	t.Parallel()
+
+	original := errors.New("git ls-remote origin: exit status 128: remote: Repository not found.")
+	classified := classifyRemoteUnavailable(original)
+	if !errors.Is(classified, ErrRemoteUnavailable) {
+		t.Fatalf("classifyRemoteUnavailable() = %v, want ErrRemoteUnavailable", classified)
+	}
+	// 分类只是在错误链上加一个标记，原始错误必须仍然可查。
+	if !errors.Is(classified, original) {
+		t.Fatalf("classifyRemoteUnavailable() 丢失了原始错误: %v", classified)
+	}
+
+	transient := errors.New("git fetch origin: exit status 128: fatal: the remote end hung up unexpectedly")
+	if got := classifyRemoteUnavailable(transient); errors.Is(got, ErrRemoteUnavailable) {
+		t.Fatalf("瞬时故障被误判为远端不可用: %v", got)
+	}
+	if err := classifyRemoteUnavailable(nil); err != nil {
+		t.Fatalf("classifyRemoteUnavailable(nil) = %v, want nil", err)
+	}
+}
+
+func TestProbeRemoteAcceptsLiveRepository(t *testing.T) {
+	t.Parallel()
+
+	client := New(t.TempDir(), 30*time.Second)
+	if err := client.ProbeRemote(context.Background(), createLocalRepository(t, "fresh.txt", "fresh")); err != nil {
+		t.Fatalf("ProbeRemote() error = %v", err)
+	}
+}
+
+func TestProbeRemoteReportsMissingRemote(t *testing.T) {
+	t.Parallel()
+
+	client := New(t.TempDir(), 30*time.Second)
+	absent := fileURL(t, filepath.Join(t.TempDir(), "absent"))
+
+	err := client.ProbeRemote(context.Background(), absent)
+	if !errors.Is(err, ErrRemoteUnavailable) {
+		t.Fatalf("ProbeRemote() error = %v, want ErrRemoteUnavailable", err)
+	}
+}
+
+func TestProbeRemoteRequiresURL(t *testing.T) {
+	t.Parallel()
+
+	client := New(t.TempDir(), 30*time.Second)
+	if err := client.ProbeRemote(context.Background(), "  "); err == nil {
+		t.Fatal("ProbeRemote() error = nil, want url error")
+	}
+}
+
+func TestSyncReportsRemoteUnavailableAfterRemoteDeleted(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	client := New(root, 30*time.Second)
+	remote := createRepository(t, "fresh.txt", "fresh")
+	remoteURL := fileURL(t, remote)
+
+	first := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if first.Error != "" {
+		t.Fatalf("first Sync() error = %q", first.Error)
+	}
+	if first.RemoteUnavailable {
+		t.Fatal("成功同步不应标记远端不可用")
+	}
+
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatalf("remove remote: %v", err)
+	}
+
+	second := client.Sync(context.Background(), Repository{Name: "example", URL: remoteURL})
+	if second.Error == "" {
+		t.Fatal("远端被删除后同步应当失败")
+	}
+	if !second.RemoteUnavailable {
+		t.Fatalf("RemoteUnavailable = false, error = %q", second.Error)
+	}
+}
+
 func TestRetryableNetworkMessage(t *testing.T) {
 	t.Parallel()
 

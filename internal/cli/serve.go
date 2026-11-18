@@ -99,6 +99,7 @@ func runServe(args []string, stderr io.Writer) int {
 			Vault:      repoVault,
 			Auth:       auth,
 			Sync:       syncer,
+			Remote:     syncer,
 			States:     guard,
 			CacheDir:   filepath.Join(cfg.DataRoot, "cache"),
 			GitTimeout: cfg.GitCommandTimeoutDuration,

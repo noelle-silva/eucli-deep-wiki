@@ -269,20 +269,25 @@ func authorizedRequest(method string, target string) *http.Request {
 
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
-	return buildRouter(t, []string{testAPIKey}, nil)
+	return buildRouter(t, []string{testAPIKey}, nil, nil)
 }
 
 func newTestRouterWithKeys(t *testing.T, keys []string) http.Handler {
 	t.Helper()
-	return buildRouter(t, keys, nil)
+	return buildRouter(t, keys, nil, nil)
 }
 
 func newTestRouterWithSync(t *testing.T, trigger SyncTrigger) http.Handler {
 	t.Helper()
-	return buildRouter(t, []string{testAPIKey}, trigger)
+	return buildRouter(t, []string{testAPIKey}, trigger, nil)
 }
 
-func newTestRouterWithStates(t *testing.T) http.Handler {
+func newTestRouterWithRemote(t *testing.T, checker RemoteChecker) http.Handler {
+	t.Helper()
+	return buildRouter(t, []string{testAPIKey}, nil, checker)
+}
+
+func newTestRouterWithStates(t *testing.T, states StateSource) http.Handler {
 	t.Helper()
 
 	root := t.TempDir()
@@ -298,13 +303,13 @@ func newTestRouterWithStates(t *testing.T) http.Handler {
 		Store:      status.NewStore(),
 		Vault:      repoVault,
 		Auth:       auth,
-		States:     stubStates{},
+		States:     states,
 		CacheDir:   t.TempDir(),
 		GitTimeout: 30 * time.Second,
 	})
 }
 
-func buildRouter(t *testing.T, keys []string, trigger SyncTrigger) http.Handler {
+func buildRouter(t *testing.T, keys []string, trigger SyncTrigger, checker RemoteChecker) http.Handler {
 	t.Helper()
 
 	root := t.TempDir()
@@ -327,6 +332,7 @@ func buildRouter(t *testing.T, keys []string, trigger SyncTrigger) http.Handler 
 		Vault:      repoVault,
 		Auth:       auth,
 		Sync:       trigger,
+		Remote:     checker,
 		States:     nil,
 		CacheDir:   t.TempDir(),
 		GitTimeout: 30 * time.Second,
@@ -358,18 +364,18 @@ func TestArchiveReportsMissingPath(t *testing.T) {
 	}
 }
 
-type stubStates struct{}
+type stubStates map[string]state.RepoState
 
-func (stubStates) Snapshot() map[string]state.RepoState {
-	return map[string]state.RepoState{
-		"example": {Blocked: true, BlockedSize: 1 << 30},
-	}
+func (s stubStates) Snapshot() map[string]state.RepoState {
+	return s
 }
 
 func TestStateEndpointReportsBlockedRepository(t *testing.T) {
 	t.Parallel()
 
-	handler := newTestRouterWithStates(t)
+	handler := newTestRouterWithStates(t, stubStates{
+		"example": {Blocked: true, BlockedSize: 1 << 30},
+	})
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/state"))
@@ -379,6 +385,40 @@ func TestStateEndpointReportsBlockedRepository(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "\"blocked\":true") {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestStateEndpointReportsRemoteStatus(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouterWithStates(t, stubStates{
+		"example": {
+			ConsecutiveFailures: 3,
+			LastError:           "Repository not found",
+			RemoteMissing:       true,
+			RemoteMissingAt:     time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC),
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/state"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+
+	var payload struct {
+		Repositories map[string]state.RepoState `json:"repositories"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := payload.Repositories["example"]
+	if !got.RemoteMissing || got.ConsecutiveFailures != 3 || got.LastError != "Repository not found" {
+		t.Fatalf("state = %#v", got)
+	}
+	if got.RemoteMissingAt.IsZero() {
+		t.Fatal("RemoteMissingAt 未透出")
 	}
 }
 

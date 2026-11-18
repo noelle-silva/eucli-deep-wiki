@@ -112,7 +112,7 @@ func runSearch(args []string, stdout io.Writer, stderr io.Writer) int {
 	setupHelp(flags, "eucli-dw "+flags.Name()+" [参数]")
 	options := &clientFlags{}
 	options.register(flags, true)
-	limit := flags.Int("limit", 0, "最多返回多少条命中")
+	limit := flags.Int("limit", 0, "最多返回多少条命中（单次上限 100，可配合 --offset 翻页）")
 	offset := flags.Int("offset", 0, "跳过前多少条命中，用于翻页")
 	searchPath := flags.String("path", "", "只在指定目录内检索")
 

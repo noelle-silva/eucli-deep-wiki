@@ -21,6 +21,10 @@ const (
 var (
 	errGitCommandTimeout  = errors.New("git command timed out")
 	errGitCommandCanceled = errors.New("git command canceled")
+
+	// ErrRemoteUnavailable 表示远端仓库已经不可用：被删除、转为私有，
+	// 或者当前环境没有访问它的凭据。它属于确定性失败，重试没有意义。
+	ErrRemoteUnavailable = errors.New("remote repository unavailable")
 )
 
 type targetState int
@@ -49,6 +53,8 @@ type Result struct {
 	FinishedAt time.Time     `json:"finishedAt"`
 	Duration   time.Duration `json:"duration"`
 	Error      string        `json:"error,omitempty"`
+	// RemoteUnavailable 说明本次失败是「远端仓库不可用」，供上层判定仓库是否已经消失。
+	RemoteUnavailable bool `json:"remoteUnavailable,omitempty"`
 }
 
 type localState struct {
@@ -91,6 +97,7 @@ func (c *Client) Sync(ctx context.Context, repo Repository) Result {
 	result.Duration = result.FinishedAt.Sub(result.StartedAt)
 	if err != nil {
 		result.Error = err.Error()
+		result.RemoteUnavailable = errors.Is(err, ErrRemoteUnavailable)
 	}
 	return result
 }
@@ -160,6 +167,18 @@ func (c *Client) IsShallow(ctx context.Context, path string) (bool, error) {
 // Compact 把已存在的完整仓库就地转为浅克隆。
 func (c *Client) Compact(ctx context.Context, path string) error {
 	_, err := c.shrinkToShallow(ctx, path)
+	return err
+}
+
+// ProbeRemote 只做一次 ls-remote 探测远端是否可达。
+//
+// 探测直接打远端地址，既不读取也不改动本地仓库，因此本地副本缺失或有损时
+// 也能判断远端状态。
+func (c *Client) ProbeRemote(ctx context.Context, url string) error {
+	if strings.TrimSpace(url) == "" {
+		return errors.New("repository url is required")
+	}
+	_, err := c.runNetwork(ctx, "", "ls-remote", "--heads", url)
 	return err
 }
 
@@ -364,7 +383,8 @@ func (c *Client) cloneAndEnforce(ctx context.Context, repo Repository, path stri
 	}
 	cloneArgs = append(cloneArgs, repo.URL, path)
 	if _, err := c.run(ctx, "", cloneArgs...); err != nil {
-		return "", failureAction, err
+		// 克隆阶段的“仓库不存在 / 需要凭据”同样属于远端不可用。
+		return "", failureAction, classifyRemoteUnavailable(err)
 	}
 	branch, err := c.enforceRemoteState(ctx, path, repo.Branch)
 	if err != nil {
@@ -661,6 +681,15 @@ var permanentNetworkFailures = []string{
 	"cannot lock ref",
 }
 
+// remoteUnavailableMarkers 是远端被删除或转为私有后 git 固定给出的文本。
+// 它们都在 permanentNetworkFailures 里，因此不会进入重试，只做分类。
+var remoteUnavailableMarkers = []string{
+	"Repository not found",
+	"does not appear to be a git repository",
+	"could not read Username",
+	"could not read Password",
+}
+
 // runNetwork 用于 clone 之外的网络型命令，遇到瞬时故障按指数退避重试。
 func (c *Client) runNetwork(ctx context.Context, dir string, args ...string) (string, error) {
 	backoff := networkBaseBackoff
@@ -685,7 +714,25 @@ func (c *Client) runNetwork(ctx context.Context, dir string, args ...string) (st
 		backoff *= 2
 	}
 
-	return output, lastErr
+	return output, classifyRemoteUnavailable(lastErr)
+}
+
+// classifyRemoteUnavailable 给「远端仓库不可用」打上 sentinel，让上层用
+// errors.Is 判断，而不用去解析错误文本。
+func classifyRemoteUnavailable(err error) error {
+	if err == nil || !remoteUnavailableMessage(err.Error()) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrRemoteUnavailable, err)
+}
+
+func remoteUnavailableMessage(message string) bool {
+	for _, marker := range remoteUnavailableMarkers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isRetryableNetworkError(err error) bool {

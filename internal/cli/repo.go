@@ -34,6 +34,8 @@ func runRepo(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRepoList(args[1:], stdout, stderr)
 	case "unblock":
 		return runRepoUnblock(args[1:], stdout, stderr)
+	case "check":
+		return runRepoCheck(args[1:], stdout, stderr)
 	case "compact":
 		return runRepoCompact(args[1:], stdout, stderr)
 	default:
@@ -49,7 +51,8 @@ func printRepoUsage(out io.Writer) {
 子命令:
   add <git-url>...       把仓库加入索引
   list                   查看索引中的仓库
-  unblock <仓库>          解除体积保护，恢复同步
+  unblock <仓库>          解除体积保护或远端消失标记，恢复同步
+  check [仓库]...         探测远端是否还在，不带仓库名时检查索引里的全部仓库
   compact [仓库]...       就地转为浅克隆，不重新下载
 `)
 }
@@ -142,8 +145,11 @@ func runRepoList(args []string, stdout io.Writer, stderr io.Writer) int {
 		stateOfRepo := guard.Get(repository.Name)
 
 		marker := ""
+		if stateOfRepo.RemoteMissing {
+			marker += "\tMISSING"
+		}
 		if stateOfRepo.Blocked {
-			marker = fmt.Sprintf("\tBLOCKED(%d MB)", stateOfRepo.BlockedSize>>20)
+			marker += fmt.Sprintf("\tBLOCKED(%d MB)", stateOfRepo.BlockedSize>>20)
 		}
 
 		branch := repository.Branch
@@ -199,7 +205,7 @@ func directorySize(root string) (int64, error) {
 	return total, err
 }
 
-// runRepoUnblock 解除某个仓库的体积保护。
+// runRepoUnblock 解除某个仓库的停止同步状态（体积保护或远端消失标记）。
 func runRepoUnblock(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("repo unblock", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -228,11 +234,13 @@ func runRepoUnblock(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if !guard.Get(name).Blocked {
+	current := guard.Get(name)
+	if !current.Blocked && !current.RemoteMissing {
 		fmt.Fprintf(stdout, "%s 未处于停止同步状态\n", name)
 		return 0
 	}
 
+	// 解除的是「停止同步」这一整套状态，因此连失败计数一起清零。
 	if err := guard.Put(name, state.RepoState{}); err != nil {
 		fmt.Fprintf(stderr, "写入状态失败: %v\n", err)
 		return 1

@@ -112,3 +112,94 @@ func TestSyncEndpointsRequireKey(t *testing.T) {
 		}
 	}
 }
+
+type stubRemote struct {
+	status runner.RemoteStatus
+	err    error
+	called string
+}
+
+func (s *stubRemote) CheckRemote(_ context.Context, name string) (runner.RemoteStatus, error) {
+	s.called = name
+	if s.err != nil {
+		return runner.RemoteStatus{}, s.err
+	}
+	status := s.status
+	if status.Repo == "" {
+		status.Repo = name
+	}
+	return status, nil
+}
+
+func TestCheckRepositoryReportsReachable(t *testing.T) {
+	t.Parallel()
+
+	checker := &stubRemote{status: runner.RemoteStatus{Reachable: true}}
+	handler := newTestRouterWithRemote(t, checker)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorizedRequest(http.MethodPost, "/v1/repos/example/check"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if checker.called != "example" {
+		t.Fatalf("called = %q", checker.called)
+	}
+
+	var payload runner.RemoteStatus
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !payload.Reachable || payload.Repo != "example" || payload.Error != "" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestCheckRepositoryReportsUnreachable(t *testing.T) {
+	t.Parallel()
+
+	checker := &stubRemote{status: runner.RemoteStatus{Reachable: false, Error: "Repository not found"}}
+	handler := newTestRouterWithRemote(t, checker)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorizedRequest(http.MethodPost, "/v1/repos/example/check"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload runner.RemoteStatus
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Reachable || payload.Error != "Repository not found" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestCheckRepositoryReportsUnknownRepository(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouterWithRemote(t, &stubRemote{err: runner.ErrRepoNotManaged})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorizedRequest(http.MethodPost, "/v1/repos/nope/check"))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestCheckRepositoryRequiresKey(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouterWithRemote(t, &stubRemote{})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/repos/example/check", nil))
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}

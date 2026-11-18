@@ -172,6 +172,22 @@ go run ./cmd/reference-add -config <配置文件路径> https://github.com/xxxx/
 http://127.0.0.1:9997/status
 ```
 
+`/status` 返回当前或上一轮的同步快照：`running` 表示是否有同步在跑，`results` 是已记录的结果，`summary` 按动作统计条数。运行中 `summary` 是已处理部分的汇总，结束后是全量汇总。
+
+每个仓库的远端状态与体积保护记录在 `/v1/state`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `remoteMissing` | 远端已被判定不可用，后续同步直接跳过该仓库 |
+| `remoteMissingAt` | 判定远端不可用的时间 |
+| `consecutiveFailures` | 连续同步失败次数，成功一次即清零 |
+| `lastError` | 最近一次同步失败的错误信息，成功后清空 |
+| `blocked` / `blockedSize` | 体积保护：`.git` 超过 `sizeLimitMB` 后停止同步 |
+
+远端不可用类失败会在连续失败计数达到 3 次时判定远端消失；其它失败只累加 `consecutiveFailures` 并记录 `lastError`，不会触发该标记。确认远端恢复后执行 `repo unblock`，会同时清掉 `remoteMissing`、失败计数与 `lastError`，下一轮同步重新尝试。
+
+`GET /v1/state` 只列出“有状态”的仓库：返回空对象表示当前没有任何仓库处于失败、停止同步或体积保护状态；`consecutiveFailures` 从第一次失败起就会记录，因此即使还没到 3 次判定门槛，也能从这里看到哪个仓库在连续失败。
+
 ## 只读查询接口
 
 服务对已同步的参考仓库提供只读 HTTP 接口，供人和 Agent 按需取用。
@@ -192,17 +208,34 @@ key 配置在 `config.json` 的 `apiKeys` 数组里，可以放多个，便于�
 | `GET /v1/repos/{name}/file?path=` | 读取文本文件 |
 | `GET /v1/repos/{name}/search?q=&limit=` | 按行子串检索 |
 | `GET /v1/repos/{name}/search?q=&path=&offset=` | 限定目录并翻页 |
+| `GET /v1/repos/{name}/find?name=&path=&limit=&offset=` | 按文件名查找，支持通配与翻页 |
 | `GET /v1/repos/{name}/archive?path=&path=` | 快照打包，`path` 可重复，留空为整仓 |
 | `GET /v1/archive?include=仓库:路径&include=…` | 跨仓库或多目标打包 |
 | `GET /v1/repos/{name}/bundle` | 带完整历史的 `git bundle` |
 | `POST /v1/repos/{name}/sync` | 立刻同步指定仓库，同步返回结果 |
 | `POST /v1/sync` | 触发一轮全量同步，立即返回 `202` |
+| `POST /v1/repos/{name}/check` | 探测远端是否可达，不改动本地仓库 |
+| `GET /v1/state` | 每个仓库的远端状态与体积保护记录 |
 
 按需同步用于「刚改完文档，不想等 6 小时」。这里的“只读”是针对仓库内容的：客户端永远不能写入、修改或删除仓库里的文件；触发同步是服务器自身的运维动作，只是把远端内容拉到本地，不改变任何远端仓库。已有同步在跑时返回 `409 sync_busy`，不排队。
 
 ```sh
 eucli-dw sync <仓库>      # 立刻同步这一个
 eucli-dw sync --all       # 立刻跑一轮全量
+```
+
+`find` 只按文件名匹配，不读文件内容。`name` 含 `*`、`?`、`[` 时按通配处理，否则按不区分大小写的子串匹配；`path` 限定目录，`offset` 跳过前面的命中，`limit` 默认 200、单次上限 10000，超过上限按 10000 处理。结果里的 `entries` 每项含 `name`、`path`、`type`、`size`；`scannedFiles` 是遍历过的文件数，`truncated` 表示还有未返回的命中。
+
+```sh
+curl "http://127.0.0.1:9997/v1/repos/claw-code/find?name=*.md&path=docs&limit=20"
+```
+
+`search` 结果里的 `scannedBytes` 是实际读取的字节数（跳过的二进制文件也计入），`scannedFiles` 是实际参与匹配的文本文件数。
+
+`check` 直接对远端执行一次 `git ls-remote`，只判断远端是否还在，不读取、不改动本地仓库，也不改动同步状态。返回 `{"repo":"…","reachable":true}`；不可达时 `reachable` 为 `false`，并带上 `error`。仓库不在索引中时返回 `404 repo_not_found`。
+
+```sh
+curl -X POST -H "Authorization: Bearer <key>" http://127.0.0.1:9997/v1/repos/claw-code/check
 ```
 
 打包默认输出 zip，加 `format=tar.gz` 可换格式；归档不包含 `.git`，总量上限 512 MiB、条目上限两万。bundle 按提交号缓存在 `dataRoot/cache` 下，同一提交只生成一次。
@@ -233,12 +266,14 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 | --- | --- |
 | 路径越出仓库 | `400 invalid_path` |
 | 仓库不存在或尚未同步 | `404 repo_not_found` |
+| 路径不存在 | `404 path_not_found` |
 | 目标不是普通文件 | `400 not_a_file` |
 | 文件超过 1 MiB | `413 file_too_large` |
 | 文件不是 UTF-8 文本 | `415 not_text` |
 | 检索词为空 | `400 query_required` |
+| 文件名为空 | `400 name_required` |
 
-所有路径都经 `os.Root` 收敛，符号链接无法把访问带出仓库；目录树与检索都会跳过 `.git`。
+所有路径都经 `os.Root` 收敛，符号链接无法把访问带出仓库；目录树、检索与查找都会跳过 `.git`。
 
 ## 命令行工具
 
@@ -248,15 +283,16 @@ curl "http://127.0.0.1:9997/v1/repos/claw-code/search?q=subagent&limit=5"
 eucli-dw serve [--service-config 路径] [--http-address 地址] [--once]
 eucli-dw repo add [--service-config 路径] <git-url>...
 eucli-dw repo list [--service-config 路径] [--json]
+eucli-dw repo check [--service-config 路径] [仓库]...
 eucli-dw repo unblock [--service-config 路径] <仓库>
 
 eucli-dw get [参数] <仓库> <路径>
 eucli-dw tree [参数] <仓库> [目录]
 eucli-dw search [参数] <仓库> <关键词>   --path 限定目录，--offset 翻页
-eucli-dw find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配与 --offset 翻页
+eucli-dw find [参数] <仓库> <文件名>     按文件名查找，支持 * 通配；--offset 翻页，--limit 默认 200、上限 10000
 eucli-dw repos [--json]             列出服务器上的仓库与提交号
 eucli-dw status [--json]            查看同步状态
-eucli-dw sync <仓库> | sync --all
+eucli-dw sync [--json] <仓库> | sync --all [--json]
 eucli-dw pull <仓库>[:路径] ... [-o 文件] [--progress] [--json]
 eucli-dw bundle <仓库> [-o 文件] [--progress] [--json]
 
@@ -268,6 +304,14 @@ eucli-dw cache list | cache clean [--yes]
 ```
 
 查询命令通用参数另有 `--timeout 秒数`，用来给大文件下载设置上限。
+
+`repo check` 逐个探测索引里的仓库（也可以只传仓库名）：远端可达输出 `可达`，不可达输出 `不可达` 与错误信息，索引里不存在的名字输出 `未知仓库`，最后给出汇总行。全部可达返回退出码 0，只要出现不可达或未知就返回 1；`--json` 输出 `{checked, reachable, unreachable, unknown, results[]}`。探测并发进行，走本机服务，需要服务正在运行。
+
+`repo list` 与 `repos` 会在仓库名后追加 `MISSING`，表示该仓库的远端已被判定不可用；`repo list` 读本地状态文件，`repos` 读服务端状态。
+
+`find --limit` 超过上限时按 10000 处理，文本模式的结果截断提示会写明该上限。
+
+`sync <仓库> --json` 输出该仓库的 `name`、`action`、`durationMs`、`error`；`sync --all --json` 输出 `{"status":"started"}`。同步失败时退出码非零，错误同时以 `{"ok":false,...}` 写入 stderr。文本模式的输出保持不变。
 
 **退出码**（便于脚本判断该重试还是放弃）：
 
