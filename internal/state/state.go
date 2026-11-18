@@ -24,6 +24,10 @@ type RepoState struct {
 	BlockedAt   time.Time `json:"blockedAt,omitempty"`
 	BlockedSize int64     `json:"blockedSize,omitempty"`
 
+	// LastSyncAt 与 GitBytes 是同步成功那一刻的事实：何时同步、当时 .git 多大。
+	LastSyncAt time.Time `json:"lastSyncAt,omitempty"`
+	GitBytes   int64     `json:"gitBytes,omitempty"`
+
 	// 连续同步失败的次数，成功一次即清零。
 	ConsecutiveFailures int    `json:"consecutiveFailures,omitempty"`
 	LastError           string `json:"lastError,omitempty"`

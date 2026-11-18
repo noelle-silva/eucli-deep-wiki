@@ -64,7 +64,7 @@ func TestFileReturnsContentAndRevision(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	file, err := client.File(context.Background(), "example", "docs/a.md")
+	file, err := client.File(context.Background(), "example", FileOptions{Path: "docs/a.md"})
 	if err != nil {
 		t.Fatalf("File() error = %v", err)
 	}
@@ -91,7 +91,7 @@ func TestErrorMapping(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = client.File(context.Background(), "example", "missing.md")
+	_, err = client.File(context.Background(), "example", FileOptions{Path: "missing.md"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("error = %v, want *APIError", err)
@@ -202,5 +202,99 @@ func TestCheckRepoMapsMissingRepository(t *testing.T) {
 	}
 	if apiErr.StatusCode != http.StatusNotFound || apiErr.Code != "repo_not_found" {
 		t.Fatalf("apiErr = %#v", apiErr)
+	}
+}
+
+func TestFileSendsRangeAndReadsRangeHeaders(t *testing.T) {
+	t.Parallel()
+
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.Header().Set("X-Repo-Revision", "abc123")
+		w.Header().Set("X-File-Total-Lines", "40")
+		w.Header().Set("X-File-First-Line", "3")
+		w.Header().Set("X-File-Last-Line", "12")
+		w.Header().Set("X-File-Bytes", "9")
+		w.Header().Set("X-File-Size", "100")
+		w.Header().Set("X-File-Truncated", "bytes")
+		_, _ = w.Write([]byte("line two\n"))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	file, err := client.File(context.Background(), "example", FileOptions{
+		Path:     "docs/guide.md",
+		Lines:    "3-12",
+		MaxBytes: 9,
+	})
+	if err != nil {
+		t.Fatalf("File() error = %v", err)
+	}
+
+	for _, want := range []string{"path=docs%2Fguide.md", "lines=3-12", "maxBytes=9"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query = %q, want 含 %q", query, want)
+		}
+	}
+	if file.TotalLines != 40 || file.FirstLine != 3 || file.LastLine != 12 {
+		t.Fatalf("行信息 = %d / %d-%d", file.TotalLines, file.FirstLine, file.LastLine)
+	}
+	if file.Size != 100 || file.ReturnedBytes != 9 || file.Truncated != "bytes" {
+		t.Fatalf("file = %#v", file)
+	}
+}
+
+func TestTreeSendsDepthAndDirsOnly(t *testing.T) {
+	t.Parallel()
+
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"repo":"example","path":"","depth":3,"entries":[],"truncated":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tree, err := client.Tree(context.Background(), "example", TreeOptions{Depth: 3, DirsOnly: true})
+	if err != nil {
+		t.Fatalf("Tree() error = %v", err)
+	}
+	if !strings.Contains(query, "depth=3") || !strings.Contains(query, "dirsOnly=true") {
+		t.Fatalf("query = %q", query)
+	}
+	if tree.Depth != 3 {
+		t.Fatalf("Depth = %d", tree.Depth)
+	}
+}
+
+func TestFindSendsSubstringMatch(t *testing.T) {
+	t.Parallel()
+
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"repo":"example","pattern":"main","entries":[],"scannedFiles":0,"truncated":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := client.Find(context.Background(), "example", FindOptions{Pattern: "main", Substring: true}); err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if !strings.Contains(query, "match=substring") {
+		t.Fatalf("query = %q", query)
 	}
 }

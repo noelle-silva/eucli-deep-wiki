@@ -59,8 +59,8 @@ func NewRouter(options Options) http.Handler {
 
 	mux.Handle("GET /status", protect(statusHandler(options.Store, options.Live)))
 
-	mux.Handle("GET /v1/repos", protect(listRepositories(options.Live)))
-	mux.Handle("GET /v1/repos/{name}", protect(showRepository(options.Live)))
+	mux.Handle("GET /v1/repos", protect(listRepositories(options.Live, options.States)))
+	mux.Handle("GET /v1/repos/{name}", protect(showRepository(options.Live, options.States)))
 	mux.Handle("GET /v1/repos/{name}/tree", protect(showTree(options.Live)))
 	mux.Handle("GET /v1/repos/{name}/file", protect(showFile(options.Live)))
 	mux.Handle("GET /v1/repos/{name}/search", protect(searchRepository(options.Live)))

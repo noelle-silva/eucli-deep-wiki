@@ -25,6 +25,7 @@ type stubGit struct {
 	result    gitops.Result
 	size      int64
 	sizeAfter int64
+	sizeErr   error
 	gcCalls   int
 	syncCalls int
 	probeErr  error
@@ -48,7 +49,7 @@ func (s *stubGit) GarbageCollect(_ context.Context, _ string) error {
 }
 
 func (s *stubGit) GitDirectorySize(_ string) (int64, error) {
-	return s.size, nil
+	return s.size, s.sizeErr
 }
 
 func (s *stubGit) ProbeRemote(_ context.Context, url string) error {
@@ -510,5 +511,57 @@ func TestWaitNextRunReschedulesAfterIntervalChange(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("周期改短后仍在等原来的 6h")
+	}
+}
+
+func TestSyncOneRecordsSyncFact(t *testing.T) {
+	t.Parallel()
+
+	finishedAt := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
+	git := &stubGit{
+		result: gitops.Result{Action: "updated", FinishedAt: finishedAt},
+		size:   4 << 20,
+	}
+	target, guard := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	if err := target.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v", err)
+	}
+
+	got := guard.Get("example")
+	if !got.LastSyncAt.Equal(finishedAt) {
+		t.Fatalf("LastSyncAt = %v, want %v", got.LastSyncAt, finishedAt)
+	}
+	if got.GitBytes != 4<<20 {
+		t.Fatalf("GitBytes = %d, want %d", got.GitBytes, 4<<20)
+	}
+}
+
+func TestSyncOneKeepsGitBytesWhenMeasurementFails(t *testing.T) {
+	t.Parallel()
+
+	git := &stubGit{
+		result:  gitops.Result{Action: "updated", FinishedAt: time.Now()},
+		sizeErr: errors.New("测量失败"),
+	}
+	target, guard := newTestRunner(t, git, []repoindex.Repository{{Name: "example", URL: "https://example.com/a.git"}})
+
+	if err := guard.Put("example", state.RepoState{GitBytes: 7 << 20}); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	if err := target.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v", err)
+	}
+
+	got := guard.Get("example")
+	if got.LastSyncAt.IsZero() {
+		t.Fatal("测量失败不该影响同步时间的记录")
+	}
+	if got.GitBytes != 7<<20 {
+		t.Fatalf("GitBytes = %d, want 保留历史值 %d", got.GitBytes, 7<<20)
+	}
+	if git.gcCalls != 0 {
+		t.Fatalf("gcCalls = %d, want 0", git.gcCalls)
 	}
 }

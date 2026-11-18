@@ -13,11 +13,32 @@ import (
 // defaultSearchWorkers 是并行扫描的默认并行度。
 const defaultSearchWorkers = 4
 
+// MaxSearchContext 是单处命中最多带出的上下文行数（前后各算）。
+const MaxSearchContext = 10
+
+// MaxOversizedDetail 是结果里最多列出多少个被跳过的超大文件。
+const MaxOversizedDetail = 20
+
+// ContextLine 是命中行前后的一行原文。
+type ContextLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
 // Match 是一处命中。
 type Match struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Text string `json:"text"`
+	// Before 与 After 是紧邻命中行的上下文，按行号顺序排列。
+	Before []ContextLine `json:"before,omitempty"`
+	After  []ContextLine `json:"after,omitempty"`
+}
+
+// OversizedFile 是一个因为超过单文件上限而没有参与检索的文件。
+type OversizedFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // SearchOptions 描述一次检索的边界。
@@ -26,6 +47,8 @@ type SearchOptions struct {
 	Path   string
 	Offset int
 	Limit  int
+	// Context 是每处命中带出的上下文行数（前后各这么多），0 表示不带。
+	Context int
 }
 
 // SearchResult 是一次检索的结果。
@@ -40,7 +63,22 @@ type SearchResult struct {
 	Scanned int `json:"scannedFiles"`
 	// ScannedBytes 是实际读取的字节数，被跳过的二进制文件同样计入。
 	ScannedBytes int64 `json:"scannedBytes"`
-	Truncated    bool  `json:"truncated"`
+	// Oversized 列出被跳过的大文件明细（最多 MaxOversizedDetail 条）。
+	Oversized []OversizedFile `json:"oversizedFiles,omitempty"`
+	// OversizedCount 是被跳过的大文件总数，可能大于明细条数。
+	OversizedCount int  `json:"oversizedFilesCount,omitempty"`
+	Truncated      bool `json:"truncated"`
+}
+
+// NormalizeSearchContext 把请求的上下文行数收敛到硬上限。
+func NormalizeSearchContext(lines int) int {
+	if lines <= 0 {
+		return 0
+	}
+	if lines > MaxSearchContext {
+		return MaxSearchContext
+	}
+	return lines
 }
 
 // Search 在指定目录内按行做子串匹配；支持偏移量，便于翻页。
@@ -82,15 +120,17 @@ func (v *Vault) Search(name string, options SearchOptions) (SearchResult, error)
 	}
 
 	result := SearchResult{
-		Repo:         name,
-		Revision:     readMetaRevision(name, v.repos[name]),
-		Query:        options.Query,
-		Path:         options.Path,
-		Offset:       scan.offset,
-		Matches:      buildMatches(root, window),
-		Scanned:      scan.scanned,
-		ScannedBytes: scan.scannedBytes,
-		Truncated:    scan.truncated,
+		Repo:           name,
+		Revision:       readMetaRevision(name, v.repos[name]),
+		Query:          options.Query,
+		Path:           options.Path,
+		Offset:         scan.offset,
+		Matches:        buildMatches(root, window, NormalizeSearchContext(options.Context)),
+		Scanned:        scan.scanned,
+		ScannedBytes:   scan.scannedBytes,
+		Oversized:      scan.oversized,
+		OversizedCount: scan.oversizedCount,
+		Truncated:      scan.truncated,
 	}
 	return result, nil
 }
@@ -133,6 +173,9 @@ type searchScan struct {
 	window       []matchRef
 	enough       bool
 	truncated    bool
+
+	oversized      []OversizedFile
+	oversizedCount int
 }
 
 func newSearchScan(limits Limits, options SearchOptions) *searchScan {
@@ -157,7 +200,7 @@ func newSearchScan(limits Limits, options SearchOptions) *searchScan {
 		workers:      workers,
 		maxFiles:     limits.MaxSearchFiles,
 		maxBytes:     limits.MaxSearchBytes,
-		maxFileBytes: limits.MaxFileBytes,
+		maxFileBytes: limits.MaxSearchFileBytes,
 		window:       make([]matchRef, 0, limit+1),
 	}
 }
@@ -241,7 +284,11 @@ func (s *searchScan) enqueue(ctx context.Context, root *os.Root, rel string, job
 		}
 
 		info, err := entry.Info()
-		if err != nil || info.Size() > s.maxFileBytes {
+		if err != nil {
+			return nil
+		}
+		if info.Size() > s.maxFileBytes {
+			s.recordOversized(current, info.Size())
 			return nil
 		}
 
@@ -254,6 +301,16 @@ func (s *searchScan) enqueue(ctx context.Context, root *os.Root, rel string, job
 			return fs.SkipAll
 		}
 	})
+}
+
+// recordOversized 记下被跳过的超大文件：明细只留前若干条，总数照实累计。
+// 这些文件不参与匹配，因此必须在结果里说出来，否则调用方会以为「没命中」。
+func (s *searchScan) recordOversized(path string, size int64) {
+	s.oversizedCount++
+	if len(s.oversized) >= MaxOversizedDetail {
+		return
+	}
+	s.oversized = append(s.oversized, OversizedFile{Path: path, Size: size})
 }
 
 // scanFiles 是单个 worker 的主循环：一个 worker 独占一个仓库句柄。
@@ -347,11 +404,11 @@ func (s *searchScan) collectMatches(outcome fileScan) {
 	}
 }
 
-// buildMatches 只为窗口内的命中读取行文本。
+// buildMatches 只为窗口内的命中读取行文本，并按需带出上下文。
 //
 // 命中行在两次读取之间消失时保留行号、文本留空：命中的位置信息仍然成立，
 // 只是拿不到当时的原文。
-func buildMatches(root *os.Root, window []matchRef) []Match {
+func buildMatches(root *os.Root, window []matchRef, context int) []Match {
 	matches := make([]Match, 0, len(window))
 
 	currentPath := ""
@@ -366,7 +423,11 @@ func buildMatches(root *os.Root, window []matchRef) []Match {
 		if hit.line <= len(lines) {
 			text = trimText(lines[hit.line-1])
 		}
-		matches = append(matches, Match{Path: hit.path, Line: hit.line, Text: text})
+		match := Match{Path: hit.path, Line: hit.line, Text: text}
+		if context > 0 && len(lines) > 0 {
+			match.Before, match.After = contextAround(lines, hit.line, context)
+		}
+		matches = append(matches, match)
 	}
 
 	sort.Slice(matches, func(left int, right int) bool {
@@ -378,13 +439,40 @@ func buildMatches(root *os.Root, window []matchRef) []Match {
 	return matches
 }
 
+// contextAround 取出命中行前后各 context 行，越出文件边界就少给几行。
+func contextAround(lines []string, line int, context int) ([]ContextLine, []ContextLine) {
+	before := make([]ContextLine, 0, context)
+	for number := max(line-context, 1); number < line; number++ {
+		before = append(before, ContextLine{Line: number, Text: trimText(lines[number-1])})
+	}
+
+	after := make([]ContextLine, 0, context)
+	for number := line + 1; number <= line+context && number <= len(lines); number++ {
+		after = append(after, ContextLine{Line: number, Text: trimText(lines[number-1])})
+	}
+	return before, after
+}
+
 // readFileLines 读取取文本用的行；读不到时返回 nil，由调用方按「无文本」处理。
 func readFileLines(root *os.Root, path string) []string {
 	data, err := root.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	return strings.Split(string(data), "\n")
+	return splitFileLines(data)
+}
+
+// splitFileLines 按行切分；末尾换行不会凭空多出一个空行，
+// 否则上下文行会把文件结尾的「幽灵行」也带出来。
+func splitFileLines(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // openSearchRoots 为每个 worker 准备独立的仓库句柄，避免并发读同一个 *os.Root。

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -375,14 +374,4 @@ func collectURLs(args []string) []string {
 		urls = append(urls, strings.Fields(arg)...)
 	}
 	return urls
-}
-
-func writeJSON(stdout io.Writer, stderr io.Writer, value any) int {
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		fmt.Fprintf(stderr, "输出失败: %v\n", err)
-		return 1
-	}
-	return 0
 }

@@ -35,6 +35,19 @@ type SearchOptions struct {
 	Path   string
 	Limit  int
 	Offset int
+	// Context 是每处命中带出的上下文行数（前后各这么多）。
+	Context int
+}
+
+// FindOptions 描述一次文件名检索。
+type FindOptions struct {
+	Pattern string
+	// Path 是检索范围：服务端从该目录开始遍历，而不是在结果里过滤。
+	Path string
+	// Substring 为真时按「包含」比较，否则要求文件名与模式一致。
+	Substring bool
+	Limit     int
+	Offset    int
 }
 
 // FoundEntry 是按文件名命中的文件。
@@ -57,18 +70,21 @@ type FindResult struct {
 	Truncated bool         `json:"truncated"`
 }
 
-// Find 按文件名检索，支持通配符与子串。
-func (c *Client) Find(ctx context.Context, name string, pattern string, target string, limit int, offset int) (FindResult, error) {
+// Find 按文件名检索，支持通配符、精确与子串三种口径。
+func (c *Client) Find(ctx context.Context, name string, options FindOptions) (FindResult, error) {
 	values := url.Values{}
-	values.Set("name", pattern)
-	if target != "" {
-		values.Set("path", target)
+	values.Set("name", options.Pattern)
+	if options.Path != "" {
+		values.Set("path", options.Path)
 	}
-	if limit > 0 {
-		values.Set("limit", strconv.Itoa(limit))
+	if options.Substring {
+		values.Set("match", "substring")
 	}
-	if offset > 0 {
-		values.Set("offset", strconv.Itoa(offset))
+	if options.Limit > 0 {
+		values.Set("limit", strconv.Itoa(options.Limit))
+	}
+	if options.Offset > 0 {
+		values.Set("offset", strconv.Itoa(options.Offset))
 	}
 
 	var result FindResult
@@ -84,6 +100,16 @@ type RepoMeta struct {
 	Name     string `json:"name"`
 	Branch   string `json:"branch,omitempty"`
 	Revision string `json:"revision,omitempty"`
+	Shallow  bool   `json:"shallow,omitempty"`
+
+	// LastSyncAt 是最近一次同步成功的时间，GitBytes 是当时测得的 .git 体积。
+	LastSyncAt time.Time `json:"lastSyncAt,omitempty"`
+	GitBytes   int64     `json:"gitBytes,omitempty"`
+
+	// Blocked 表示体积超限已停止自动同步；RemoteMissing 表示远端已判定消失。
+	Blocked       bool  `json:"blocked,omitempty"`
+	BlockedSize   int64 `json:"blockedSize,omitempty"`
+	RemoteMissing bool  `json:"remoteMissing,omitempty"`
 }
 
 // Entry 是目录项。
@@ -92,6 +118,7 @@ type Entry struct {
 	Path       string    `json:"path"`
 	Type       string    `json:"type"`
 	Size       int64     `json:"size"`
+	Depth      int       `json:"depth"`
 	ModifiedAt time.Time `json:"modifiedAt,omitempty"`
 }
 
@@ -100,8 +127,18 @@ type Tree struct {
 	Repo      string  `json:"repo"`
 	Revision  string  `json:"revision"`
 	Path      string  `json:"path"`
+	Depth     int     `json:"depth"`
 	Entries   []Entry `json:"entries"`
 	Truncated bool    `json:"truncated"`
+}
+
+// TreeOptions 描述一次目录展开。
+type TreeOptions struct {
+	Path string
+	// Depth 是要展开的层数；1 表示只列直接子项。
+	Depth int
+	// DirsOnly 只要目录，用于快速看骨架。
+	DirsOnly bool
 }
 
 // Match 是一处检索命中。
@@ -109,27 +146,64 @@ type Match struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Text string `json:"text"`
+	// Before 与 After 是紧邻命中行的上下文。
+	Before []ContextLine `json:"before,omitempty"`
+	After  []ContextLine `json:"after,omitempty"`
+}
+
+// ContextLine 是命中行前后的一行原文。
+type ContextLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// OversizedFile 是一个因为超过单文件上限而没有参与检索的文件。
+type OversizedFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // SearchResult 是检索结果。
 type SearchResult struct {
-	Repo         string  `json:"repo"`
-	Revision     string  `json:"revision"`
-	Query        string  `json:"query"`
-	Path         string  `json:"path,omitempty"`
-	Offset       int     `json:"offset"`
-	Matches      []Match `json:"matches"`
-	Scanned      int     `json:"scannedFiles"`
-	ScannedBytes int64   `json:"scannedBytes"`
-	Truncated    bool    `json:"truncated"`
+	Repo           string          `json:"repo"`
+	Revision       string          `json:"revision"`
+	Query          string          `json:"query"`
+	Path           string          `json:"path,omitempty"`
+	Offset         int             `json:"offset"`
+	Matches        []Match         `json:"matches"`
+	Scanned        int             `json:"scannedFiles"`
+	ScannedBytes   int64           `json:"scannedBytes"`
+	Oversized      []OversizedFile `json:"oversizedFiles,omitempty"`
+	OversizedCount int             `json:"oversizedFilesCount,omitempty"`
+	Truncated      bool            `json:"truncated"`
 }
 
-// File 是文件读取结果。
+// FileOptions 描述一次文件读取。
+type FileOptions struct {
+	Path string
+	// Lines 是行区间写法（如 362-520、362-、-520），语法由服务端解析。
+	Lines string
+	// MaxBytes 是返回内容的字节上限；0 表示不额外限制。
+	MaxBytes int64
+}
+
+// TruncatedByBytes 是「正文被 MaxBytes 截断」的标记值，与服务端响应头一致。
+const TruncatedByBytes = "bytes"
+
+// File 是文件读取结果：正文之外还带「文件多长、这次给了哪一段」。
 type File struct {
-	Repo     string
-	Path     string
-	Revision string
-	Content  string
+	Repo     string `json:"repo"`
+	Path     string `json:"path"`
+	Revision string `json:"revision"`
+	Content  string `json:"content"`
+	// Size 是文件总字节数，ReturnedBytes 是本次返回正文的字节数。
+	Size          int64 `json:"size"`
+	ReturnedBytes int64 `json:"returnedBytes"`
+	TotalLines    int   `json:"totalLines"`
+	FirstLine     int   `json:"firstLine"`
+	LastLine      int   `json:"lastLine"`
+	// Truncated 说明正文为何不完整：目前只有 TruncatedByBytes。
+	Truncated string `json:"truncated,omitempty"`
 }
 
 // Client 是只读接口客户端。
@@ -188,11 +262,17 @@ func (c *Client) Meta(ctx context.Context, name string) (RepoMeta, error) {
 	return meta, nil
 }
 
-// Tree 列目录。
-func (c *Client) Tree(ctx context.Context, name string, target string) (Tree, error) {
+// Tree 列目录；Depth 大于 1 时服务端一次展开多层。
+func (c *Client) Tree(ctx context.Context, name string, options TreeOptions) (Tree, error) {
 	query := url.Values{}
-	if target != "" {
-		query.Set("path", target)
+	if options.Path != "" {
+		query.Set("path", options.Path)
+	}
+	if options.Depth > 0 {
+		query.Set("depth", strconv.Itoa(options.Depth))
+	}
+	if options.DirsOnly {
+		query.Set("dirsOnly", "true")
 	}
 
 	var tree Tree
@@ -216,6 +296,9 @@ func (c *Client) Search(ctx context.Context, name string, options SearchOptions)
 	if options.Offset > 0 {
 		values.Set("offset", strconv.Itoa(options.Offset))
 	}
+	if options.Context > 0 {
+		values.Set("context", strconv.Itoa(options.Context))
+	}
 
 	var result SearchResult
 	path := "/v1/repos/" + url.PathEscape(name) + "/search"
@@ -225,10 +308,16 @@ func (c *Client) Search(ctx context.Context, name string, options SearchOptions)
 	return result, nil
 }
 
-// File 读取文件内容。
-func (c *Client) File(ctx context.Context, name string, target string) (File, error) {
+// File 读取文件内容，可按行切段、按字节截断。
+func (c *Client) File(ctx context.Context, name string, options FileOptions) (File, error) {
 	query := url.Values{}
-	query.Set("path", target)
+	query.Set("path", options.Path)
+	if options.Lines != "" {
+		query.Set("lines", options.Lines)
+	}
+	if options.MaxBytes > 0 {
+		query.Set("maxBytes", strconv.FormatInt(options.MaxBytes, 10))
+	}
 
 	endpoint := c.baseURL + "/v1/repos/" + url.PathEscape(name) + "/file?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -251,12 +340,37 @@ func (c *Client) File(ctx context.Context, name string, target string) (File, er
 		return File{}, decodeError(response.StatusCode, body)
 	}
 
-	return File{
-		Repo:     name,
-		Path:     target,
-		Revision: response.Header.Get("X-Repo-Revision"),
-		Content:  string(body),
-	}, nil
+	file := File{
+		Repo:          name,
+		Path:          options.Path,
+		Revision:      response.Header.Get("X-Repo-Revision"),
+		Content:       string(body),
+		Size:          headerInt64(response, "X-File-Size"),
+		ReturnedBytes: headerInt64(response, "X-File-Bytes"),
+		TotalLines:    headerInt(response, "X-File-Total-Lines"),
+		FirstLine:     headerInt(response, "X-File-First-Line"),
+		LastLine:      headerInt(response, "X-File-Last-Line"),
+		Truncated:     response.Header.Get("X-File-Truncated"),
+	}
+	return file, nil
+}
+
+// headerInt 读一个整数响应头；缺失或非法都按 0 处理。
+func headerInt(response *http.Response, key string) int {
+	value, err := strconv.Atoi(response.Header.Get(key))
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+// headerInt64 读一个 64 位整数响应头；缺失或非法都按 0 处理。
+func headerInt64(response *http.Response, key string) int64 {
+	value, err := strconv.ParseInt(response.Header.Get(key), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 // Archive 下载打包好的快照，includes 形如 "仓库" 或 "仓库:路径"。

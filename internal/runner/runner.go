@@ -336,8 +336,11 @@ func (r *Runner) syncOne(ctx context.Context, snapshot live.Snapshot, repo repoi
 		return result
 	}
 
-	r.recordSuccess(repo)
-	r.applySizeGuard(ctx, cfg.SizeLimitMB, cfg.GCThresholdMB, cfg.GCGrowthMB, repo, repoPath, &result)
+	r.settle(ctx, sizeThresholds{
+		limitMB:       cfg.SizeLimitMB,
+		gcThresholdMB: cfg.GCThresholdMB,
+		gcGrowthMB:    cfg.GCGrowthMB,
+	}, repo, repoPath, &result)
 	return result
 }
 
@@ -372,19 +375,50 @@ func (r *Runner) recordFailure(repo repoindex.Repository, result gitops.Result) 
 	}
 }
 
-// recordSuccess 清零连续失败次数并解除远端消失标记。
-// 没有可清的状态时不写盘，避免每轮同步都为每个仓库重写状态文件。
-func (r *Runner) recordSuccess(repo repoindex.Repository) {
-	current := r.state.Get(repo.Name)
-	if current.ConsecutiveFailures == 0 && current.LastError == "" && !current.RemoteMissing && current.RemoteMissingAt.IsZero() {
-		return
+// sizeThresholds 是体积守卫的三个阈值，全部取自本轮配置快照。
+type sizeThresholds struct {
+	limitMB       int
+	gcThresholdMB int
+	gcGrowthMB    int
+}
+
+// settle 是同步成功后的收尾：测量一次体积，记录成功事实，再执行体积守卫。
+//
+// 体积只测一次，记录与守卫共用同一个测量值；测量失败只影响守卫，
+// 「何时同步成功」这件事与体积无关，照常记下。
+func (r *Runner) settle(
+	ctx context.Context,
+	thresholds sizeThresholds,
+	repo repoindex.Repository,
+	repoPath string,
+	result *gitops.Result,
+) {
+	size, measureErr := r.git.GitDirectorySize(repoPath)
+	if measureErr != nil {
+		log.Printf("repo=%s measure size: %v", repo.Name, measureErr)
 	}
 
+	r.recordSuccess(repo, size, result.FinishedAt)
+	if measureErr != nil {
+		return
+	}
+	r.applySizeGuard(ctx, thresholds, repo, repoPath, size, result)
+}
+
+// recordSuccess 记录一次成功的同步：清零失败痕迹，并写下这次同步的时间与体积。
+//
+// 这两个事实是 repos 首屏的信息来源，因此每次成功都要写；
+// 体积测量失败时保留上一次的记录，不用 0 覆盖掉真实值。
+func (r *Runner) recordSuccess(repo repoindex.Repository, size int64, at time.Time) {
 	err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
 		current.ConsecutiveFailures = 0
 		current.LastError = ""
 		current.RemoteMissing = false
 		current.RemoteMissingAt = time.Time{}
+		current.LastSyncAt = at
+		if size > 0 {
+			current.GitBytes = size
+		}
 		return current
 	})
 	if err != nil {
@@ -392,26 +426,18 @@ func (r *Runner) recordSuccess(repo repoindex.Repository) {
 	}
 }
 
-// applySizeGuard 在同步完成后检查 .git 体积：
-// 超过上限就停机保护，超过压缩线且增长足够则压缩一次并记录基准。
+// applySizeGuard 在同步完成后按体积决定是否停机保护或压缩一次。
 //
 // 三个阈值都来自本轮快照，因此改配置里的体积阈值不需要重启。
 func (r *Runner) applySizeGuard(
 	ctx context.Context,
-	sizeLimitMB int,
-	gcThresholdMB int,
-	gcGrowthMB int,
+	thresholds sizeThresholds,
 	repo repoindex.Repository,
 	repoPath string,
+	size int64,
 	result *gitops.Result,
 ) {
-	size, err := r.git.GitDirectorySize(repoPath)
-	if err != nil {
-		log.Printf("repo=%s measure size: %v", repo.Name, err)
-		return
-	}
-
-	limit := int64(sizeLimitMB) << 20
+	limit := int64(thresholds.limitMB) << 20
 	if size >= limit {
 		if err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
 			current.Blocked = true
@@ -422,12 +448,12 @@ func (r *Runner) applySizeGuard(
 			log.Printf("repo=%s persist block state: %v", repo.Name, err)
 		}
 		result.Action = "blocked"
-		result.Error = fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(size), sizeLimitMB)
+		result.Error = fmt.Sprintf("体积已达 %s，超过上限 %d MB，已停止自动同步", humanMB(size), thresholds.limitMB)
 		return
 	}
 
-	threshold := int64(gcThresholdMB) << 20
-	growth := int64(gcGrowthMB) << 20
+	threshold := int64(thresholds.gcThresholdMB) << 20
+	growth := int64(thresholds.gcGrowthMB) << 20
 	current := r.state.Get(repo.Name)
 	if size < threshold || size-current.LastGCSize < growth {
 		return
@@ -446,6 +472,7 @@ func (r *Runner) applySizeGuard(
 	if err := r.state.Update(repo.Name, func(current state.RepoState) state.RepoState {
 		current.LastGCSize = after
 		current.LastGCAt = time.Now()
+		current.GitBytes = after
 		return current
 	}); err != nil {
 		log.Printf("repo=%s persist gc state: %v", repo.Name, err)

@@ -82,7 +82,7 @@ func TestFileReadsTextAndBuildsETag(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	file, err := v.File("example", "docs/guide.md")
+	file, err := v.File("example", FileOptions{Path: "docs/guide.md"})
 	if err != nil {
 		t.Fatalf("File() error = %v", err)
 	}
@@ -107,7 +107,7 @@ func TestFileRejectsEscapingPaths(t *testing.T) {
 	}
 
 	for _, requested := range []string{"../secret.txt", "/etc/passwd", `..\secret.txt`, "docs/../../secret.txt"} {
-		if _, err := v.File("example", requested); !errors.Is(err, ErrInvalidPath) && !errors.Is(err, ErrNotFound) {
+		if _, err := v.File("example", FileOptions{Path: requested}); !errors.Is(err, ErrInvalidPath) && !errors.Is(err, ErrNotFound) {
 			t.Fatalf("File(%q) error = %v, want invalid path or not found", requested, err)
 		}
 	}
@@ -128,10 +128,10 @@ func TestFileRejectsBinaryAndOversized(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if _, err := v.File("example", "blob.bin"); !errors.Is(err, ErrBinary) {
+	if _, err := v.File("example", FileOptions{Path: "blob.bin"}); !errors.Is(err, ErrBinary) {
 		t.Fatalf("File(blob) error = %v, want ErrBinary", err)
 	}
-	if _, err := v.File("example", "big.txt"); !errors.Is(err, ErrTooLarge) {
+	if _, err := v.File("example", FileOptions{Path: "big.txt"}); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("File(big) error = %v, want ErrTooLarge", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestTreeListsDirectoriesFirst(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	tree, err := v.Tree("example", "")
+	tree, err := v.Tree("example", TreeOptions{})
 	if err != nil {
 		t.Fatalf("Tree() error = %v", err)
 	}
@@ -283,7 +283,7 @@ func TestFindMatchesGlobAndSubstring(t *testing.T) {
 		}
 	}
 
-	substring, err := v.Find("example", FindOptions{Pattern: "MAIN"})
+	substring, err := v.Find("example", FindOptions{Pattern: "MAIN", Match: NameMatchSubstring})
 	if err != nil {
 		t.Fatalf("Find() error = %v", err)
 	}
@@ -342,7 +342,7 @@ func TestSearchSkipsOversizedAndBinaryFiles(t *testing.T) {
 	writeRepoBytes(t, dir, "docs/blob.bin", []byte("needle\x00binary"))
 
 	limits := DefaultLimits()
-	limits.MaxFileBytes = 512
+	limits.MaxSearchFileBytes = 512
 	v, err := New(root, []string{"example"}, limits)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

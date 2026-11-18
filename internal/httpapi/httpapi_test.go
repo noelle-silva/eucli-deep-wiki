@@ -687,3 +687,282 @@ func TestListRepositoriesKeepsUnsynchronizedRepository(t *testing.T) {
 		t.Fatalf("repositories = %#v", payload.Repositories)
 	}
 }
+
+// newRouterWithNestedRepository 用一份带两层目录的仓库组装路由。
+func newRouterWithNestedRepository(t *testing.T) http.Handler {
+	t.Helper()
+
+	source := newTestLive(t, []string{testAPIKey})
+	repoDir := filepath.Join(source.snapshot.RepositoryDir, "example")
+	writeFile(t, repoDir, "docs/deep/more.md", "deep needle line\n")
+
+	// 新文件要进同一份视图，因此按同一根目录重建 vault。
+	rebuilt, err := vault.New(source.snapshot.RepositoryDir, []string{"example"}, vault.DefaultLimits())
+	if err != nil {
+		t.Fatalf("vault.New() error = %v", err)
+	}
+	source.snapshot.Vault = rebuilt
+	return newRouterWith(t, source, nil, nil)
+}
+
+func TestShowFileSlicesLines(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md&lines=2-2"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "line two\n" {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-File-Total-Lines"); got != "2" {
+		t.Fatalf("X-File-Total-Lines = %q", got)
+	}
+	if got := recorder.Header().Get("X-File-First-Line"); got != "2" {
+		t.Fatalf("X-File-First-Line = %q", got)
+	}
+	if got := recorder.Header().Get("X-File-Last-Line"); got != "2" {
+		t.Fatalf("X-File-Last-Line = %q", got)
+	}
+}
+
+func TestShowFileClampsBytes(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md&maxBytes=12"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "line one\n" {
+		t.Fatalf("body = %q", recorder.Body.String())
+	}
+	if got := recorder.Header().Get("X-File-Truncated"); got != "bytes" {
+		t.Fatalf("X-File-Truncated = %q", got)
+	}
+	if got := recorder.Header().Get("X-File-Last-Line"); got != "1" {
+		t.Fatalf("X-File-Last-Line = %q, want 1", got)
+	}
+}
+
+func TestShowFileGivesNoPartialLine(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md&maxBytes=4"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("body = %q, want empty（第一行就超限时不给半行）", recorder.Body.String())
+	}
+}
+
+func TestShowFileRejectsInvalidLines(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/file?path=docs/guide.md&lines=abc"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_lines") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestShowTreeExpandsDepth(t *testing.T) {
+	t.Parallel()
+
+	handler := newRouterWithNestedRepository(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/tree?depth=2"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var tree vault.Tree
+	if err := json.Unmarshal(recorder.Body.Bytes(), &tree); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if tree.Depth != 2 {
+		t.Fatalf("depth = %d", tree.Depth)
+	}
+
+	got := make([]string, 0, len(tree.Entries))
+	for _, entry := range tree.Entries {
+		got = append(got, entry.Path)
+	}
+	want := []string{"docs", "docs/deep", "docs/guide.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("entries = %#v, want %#v", got, want)
+	}
+}
+
+func TestShowTreeFiltersDirectories(t *testing.T) {
+	t.Parallel()
+
+	handler := newRouterWithNestedRepository(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/tree?depth=2&dirsOnly=true"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var tree vault.Tree
+	if err := json.Unmarshal(recorder.Body.Bytes(), &tree); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, entry := range tree.Entries {
+		if entry.Type != "dir" {
+			t.Fatalf("非目录混进结果: %#v", entry)
+		}
+	}
+	if len(tree.Entries) != 2 {
+		t.Fatalf("entries = %#v", tree.Entries)
+	}
+}
+
+func TestShowTreeRejectsInvalidFlag(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/tree?dirsOnly=maybe"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_flag") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestFindAcceptsSubstringMatch(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	exact := httptest.NewRecorder()
+	handler.ServeHTTP(exact, authorized(http.MethodGet, "/v1/repos/example/find?name=guide"))
+
+	var exactPayload vault.FindResult
+	if err := json.Unmarshal(exact.Body.Bytes(), &exactPayload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(exactPayload.Entries) != 0 {
+		t.Fatalf("精确匹配不该命中 guide.md: %#v", exactPayload.Entries)
+	}
+
+	substring := httptest.NewRecorder()
+	handler.ServeHTTP(substring, authorized(http.MethodGet, "/v1/repos/example/find?name=guide&match=substring"))
+
+	var substringPayload vault.FindResult
+	if err := json.Unmarshal(substring.Body.Bytes(), &substringPayload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(substringPayload.Entries) != 1 || substringPayload.Entries[0].Name != "guide.md" {
+		t.Fatalf("子串匹配 entries = %#v", substringPayload.Entries)
+	}
+}
+
+func TestFindRejectsInvalidMatch(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/find?name=a&match=fuzzy"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "invalid_match") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestSearchIncludesContext(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRouter(t)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos/example/search?q=two&context=1"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var result vault.SearchResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("matches = %#v", result.Matches)
+	}
+	if len(result.Matches[0].Before) != 1 || result.Matches[0].Before[0].Text != "line one" {
+		t.Fatalf("before = %#v", result.Matches[0].Before)
+	}
+}
+
+func TestListRepositoriesMergesSyncState(t *testing.T) {
+	t.Parallel()
+
+	syncedAt := time.Date(2026, 5, 6, 7, 8, 0, 0, time.UTC)
+	handler := newTestRouterWithStates(t, stubStates{"example": state.RepoState{
+		LastSyncAt:  syncedAt,
+		GitBytes:    2048,
+		Blocked:     true,
+		BlockedSize: 4096,
+	}})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, "/v1/repos"))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		Repositories []struct {
+			Name        string    `json:"name"`
+			LastSyncAt  time.Time `json:"lastSyncAt"`
+			GitBytes    int64     `json:"gitBytes"`
+			Blocked     bool      `json:"blocked"`
+			BlockedSize int64     `json:"blockedSize"`
+		} `json:"repositories"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Repositories) != 1 {
+		t.Fatalf("repositories = %#v", payload.Repositories)
+	}
+
+	repository := payload.Repositories[0]
+	if !repository.LastSyncAt.Equal(syncedAt) || repository.GitBytes != 2048 {
+		t.Fatalf("同步事实 = %#v", repository)
+	}
+	if !repository.Blocked || repository.BlockedSize != 4096 {
+		t.Fatalf("保护状态 = %#v", repository)
+	}
+}

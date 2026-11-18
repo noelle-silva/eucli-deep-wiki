@@ -28,31 +28,39 @@ var (
 	ErrBinary = errors.New("file is not text")
 	// ErrInvalidQuery 表示检索词为空。
 	ErrInvalidQuery = errors.New("query is required")
-	// ErrInvalidName 表示文件名模式为空。
+	// ErrInvalidName 表示文件名模式为空或通配语法不合法。
 	ErrInvalidName = errors.New("name is required")
+	// ErrInvalidLineRange 表示行区间写法不合法。
+	ErrInvalidLineRange = errors.New("invalid line range")
 )
 
 // Limits 控制单次请求的资源上限，避免一次请求扫穿整个仓库。
 //
 // SearchWorkers 是内容检索的并行度，其余字段都是「一口气最多处理多少」的上限。
 type Limits struct {
-	MaxFileBytes     int64
-	MaxTreeEntries   int
-	MaxSearchFiles   int
-	MaxSearchBytes   int64
-	MaxSearchResults int
-	SearchWorkers    int
+	// MaxFileBytes 是单次读取的文件大小上限。读取可以按行切段、按字节限长，
+	// 因此它约束的是「文件本身有多大」，而不是「这次返回多少」。
+	MaxFileBytes int64
+	// MaxSearchFileBytes 是内容检索时单个文件的上限：超过就跳过并在结果里列出来。
+	// 它比 MaxFileBytes 小得多——检索要扫全仓，不能为一个大文件拖住整轮。
+	MaxSearchFileBytes int64
+	MaxTreeEntries     int
+	MaxSearchFiles     int
+	MaxSearchBytes     int64
+	MaxSearchResults   int
+	SearchWorkers      int
 }
 
 // DefaultLimits 是面向阅读场景的保守取值。
 func DefaultLimits() Limits {
 	return Limits{
-		MaxFileBytes:     1 << 20,
-		MaxTreeEntries:   2000,
-		MaxSearchFiles:   20000,
-		MaxSearchBytes:   64 << 20,
-		MaxSearchResults: 100,
-		SearchWorkers:    4,
+		MaxFileBytes:       16 << 20,
+		MaxSearchFileBytes: 1 << 20,
+		MaxTreeEntries:     2000,
+		MaxSearchFiles:     20000,
+		MaxSearchBytes:     64 << 20,
+		MaxSearchResults:   100,
+		SearchWorkers:      4,
 	}
 }
 
@@ -109,9 +117,11 @@ type Meta struct {
 	Name     string `json:"name"`
 	Branch   string `json:"branch,omitempty"`
 	Revision string `json:"revision,omitempty"`
+	// Shallow 表示本地是浅克隆：只有最近一次提交的历史。
+	Shallow bool `json:"shallow,omitempty"`
 }
 
-// Meta 读取仓库分支与提交号。
+// Meta 读取仓库分支、提交号与历史深度。
 func (v *Vault) Meta(name string) (Meta, error) {
 	dir, ok := v.repos[name]
 	if !ok {
@@ -123,7 +133,13 @@ func (v *Vault) Meta(name string) (Meta, error) {
 	}
 
 	branch, revision := readHead(dir)
-	return Meta{Name: name, Branch: branch, Revision: revision}, nil
+	return Meta{Name: name, Branch: branch, Revision: revision, Shallow: isShallowDir(dir)}, nil
+}
+
+// isShallowDir 判断仓库是否是浅克隆：浅克隆会把被截断的提交记在 .git/shallow。
+func isShallowDir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git", "shallow"))
+	return err == nil
 }
 
 // RepositoryDir 返回仓库在磁盘上的目录，仅供服务内部使用。
@@ -169,6 +185,31 @@ func cleanPath(requested string) (string, error) {
 		return "", ErrInvalidPath
 	}
 	return cleaned, nil
+}
+
+// joinRel 拼接仓库内的相对路径；起点是仓库根时不留前缀。
+func joinRel(base string, name string) string {
+	if base == "." {
+		return name
+	}
+	return base + "/" + name
+}
+
+// readMetaRevision 直接从 .git 里取提交号，不为一次查询启动 git 进程。
+func readMetaRevision(name string, dir string) string {
+	_, revision := readHead(dir)
+	return revision
+}
+
+// describe 把文件系统错误收敛成可判定的业务错误。
+func describe(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // readHead 从 .git 目录直接读出分支与提交号，避免为一次查询启动 git 进程。
