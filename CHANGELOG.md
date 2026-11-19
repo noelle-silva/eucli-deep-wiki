@@ -1,5 +1,17 @@
 # 更新记录
 
+## 2026-11-18 · 破坏性变更：拆成服务端与命令行两个程序
+
+- **程序拆分。** 不再交付「一个可执行文件同时扮演服务端与命令行」。现在是两个互不相干的程序：服务端 `eucli-deep-wiki-server`（参数 `-config`、`-http-address`、`-once`，没有任何子命令）、命令行 `eucli-dw`（只有子命令，不承担服务端职责）。两侧零互相引用、零共享代码，各自是独立模块（`server/`、`cli/`），构建或测试任何一侧都不需要另一侧源码。
+- **部署形态变化。** 部署只启动服务端程序：镜像名 `eucli-deep-wiki-server:latest`，编排服务键 `eucli-deep-wiki-server`，容器内程序 `/usr/local/bin/eucli-deep-wiki-server`，启动参数 `-config /app/config.json`；镜像只承载服务端，命令行产物不在镜像里，单独构建分发。Windows 脚本族里 `EUCLI_EXE` 改名为 `EUCLI_SERVER_EXE`，语义回到纯文件名、只供进程判重。
+- **命令行不再接触服务端机器。** 名单与缓存类命令（`repo add` / `repo list` / `repo rm` / `repo unblock` / `repo compact` / `repo check`、`cache list` / `cache clean`）改由服务端接口完成，命令行只发请求，不再有 `--service-config`；不再读服务端配置、不猜部署目录、不把监听地址改写成回环地址、不取别人配置里的第一把钥匙。`repo rm` 默认只摘名单、保留磁盘数据，删数据必须显式 `--drop-data`；加入名单的地址只接受加密传输地址（`https://`）。
+- **接口增补。** 新增名单加入/移除/解封/就地瘦身、缓存清单/清理六个接口；`GET /v1/repos` 补 `url`、`history`、`effectiveHistory`、`onDisk` 与 `measure` 现测体积；原有 16 个接口的地址、参数、字段、错误标识、状态码一律不变。
+- **升级注意（从旧版本过来的人必看）：**
+  - 旧的启动方式不再可用：`eucli-dw serve …`、`--service-config`、镜像 `eucli-deep-wiki:latest`、编排服务键 `reference-sync` 均已移除，服务端改成用自己的参数启动；部署目录里只需换成新的服务端程序。
+  - 旧的命令行连接配置仍然可用：`eucli-dw config` 写下的 `server` + `apiKey`（以及 `--config`、`EUCLI_DW_CONFIG`、平台默认位置）原样沿用，换机器只需改地址与 key。
+  - 命令行的其余命令、参数、输出约定与退出码维持不变；新增的只是 `repo`/`cache` 系列改走网络，以及 `400`/`409`/`424` 类错误标识到退出码的明确映射（用法错误 2、冲突 6、网络类 5）。
+  - 服务端的数据与配置结构不变：`data/` 布局、`config/config.json` 的字段集合与含义都没有改动，原有配置可直接使用。
+
 ## 2026-11-18
 
 - CLI 取数能力补齐：`tree --depth N` / `--dirs-only`、`get --lines 362-520` / `--max-bytes` / 一次多个路径、`search --context N` 与超大文件清单、新增 `overview` 一条命令给出仓库概览。
