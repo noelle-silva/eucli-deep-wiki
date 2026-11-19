@@ -1,5 +1,3 @@
 {
-  "apiKeys": [
-    "replace-with-your-own-random-key"
-  ]
+  "maxParallelSyncs": 4
 }
