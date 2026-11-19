@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,9 @@ import (
 
 	"eucli-deep-wiki-server/internal/gitops"
 	"eucli-deep-wiki-server/internal/live"
+	"eucli-deep-wiki-server/internal/release"
 	"eucli-deep-wiki-server/internal/runner"
+	"eucli-deep-wiki-server/internal/serviceprofile"
 	"eucli-deep-wiki-server/internal/state"
 	"eucli-deep-wiki-server/internal/status"
 )
@@ -34,6 +37,9 @@ func TestParseDefaultsToConfigsPath(t *testing.T) {
 	}
 	if settings.once {
 		t.Fatal("默认不是只同步一轮")
+	}
+	if settings.version {
+		t.Fatal("默认不打印版本")
 	}
 }
 
@@ -90,7 +96,7 @@ func TestParseHelpIsNotFailure(t *testing.T) {
 func TestMainFailsWhenConfigIsMissing(t *testing.T) {
 	stderr := &bytes.Buffer{}
 
-	code := Main([]string{"--config", filepath.Join(t.TempDir(), "absent.json")}, stderr)
+	code := Main([]string{"--config", filepath.Join(t.TempDir(), "absent.json")}, &bytes.Buffer{}, stderr)
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
@@ -100,7 +106,7 @@ func TestMainFailsWhenConfigIsMissing(t *testing.T) {
 func TestMainSyncsOnceOnEmptyIndex(t *testing.T) {
 	configPath := writeConfig(t)
 
-	if code := Main([]string{"--config", configPath, "--once"}, &bytes.Buffer{}); code != 0 {
+	if code := Main([]string{"--config", configPath, "--once"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
 }
@@ -109,10 +115,16 @@ func TestMainSyncsOnceOnEmptyIndex(t *testing.T) {
 func writeConfig(t *testing.T) string {
 	t.Helper()
 
-	dataRoot := filepath.ToSlash(t.TempDir())
+	return writeConfigIn(t, t.TempDir())
+}
+
+// writeConfigIn 把服务端配置指到指定的数据目录，用于预置数据目录里的东西。
+func writeConfigIn(t *testing.T, dataRoot string) string {
+	t.Helper()
+
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	body := `{
-		"dataRoot": "` + dataRoot + `",
+		"dataRoot": "` + filepath.ToSlash(dataRoot) + `",
 		"httpAddress": "127.0.0.1:59999",
 		"apiKeys": ["0123456789abcdef"]
 	}`
@@ -120,6 +132,77 @@ func writeConfig(t *testing.T) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return configPath
+}
+
+// -version 打印的就是版本文件里的版本号：代码里没有第二份版本号。
+func TestMainPrintsVersionFromReleaseFile(t *testing.T) {
+	stdout := &bytes.Buffer{}
+
+	if code := Main([]string{"--version"}, stdout, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("code = %d, want 0", code)
+	}
+
+	info, err := release.Load()
+	if err != nil {
+		t.Fatalf("release.Load() error = %v", err)
+	}
+	if got, want := strings.TrimSpace(stdout.String()), ProgramName+" "+info.Version; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+// 就绪行是对外契约：平台按 is ready 判定可用，文字不能随意改。
+func TestReadyNoticeKeepsManifestMatchWord(t *testing.T) {
+	t.Parallel()
+
+	got := readyNotice("127.0.0.1:9997")
+	want := "eucli-deep-wiki-server is ready — listening on http://127.0.0.1:9997"
+	if got != want {
+		t.Fatalf("readyNotice() = %q, want %q", got, want)
+	}
+	if !strings.Contains(got, "is ready") {
+		t.Fatalf("就绪行里没有清单的匹配词: %q", got)
+	}
+}
+
+// 画像不合法时启动必须失败：不带着猜测起床，也不去占端口。
+func TestMainFailsOnInvalidProfile(t *testing.T) {
+	dataRoot := t.TempDir()
+	profilePath := serviceprofile.Path(dataRoot)
+	if err := os.WriteFile(profilePath, []byte(`{"port": 59999, "key": "weak-key"}`), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	stderr := &bytes.Buffer{}
+	// 就绪行只从 log 出：把它接下来，确认既没有「已就绪」也没有假装在听。
+	logOutput := captureLog(t)
+
+	code := Main([]string{"--config", writeConfigIn(t, dataRoot)}, &bytes.Buffer{}, stderr)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	logged := logOutput()
+	if strings.Contains(logged, "is ready") {
+		t.Fatalf("画像不合法却报了就绪: %s", logged)
+	}
+	if !strings.Contains(logged, profilePath) {
+		t.Fatalf("日志里没说是哪个画像文件: %s", logged)
+	}
+	if strings.Contains(logged, "weak-key") {
+		t.Fatalf("日志里回显了口令: %s", logged)
+	}
+}
+
+// captureLog 接住一段时间的标准日志，返回取内容函数与恢复动作。
+func captureLog(t *testing.T) func() string {
+	t.Helper()
+
+	buffer := &bytes.Buffer{}
+	previous := log.Writer()
+	log.SetOutput(buffer)
+
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return buffer.String
 }
 
 // 装配出来的接口就是服务端真正对外的那些：用真实运行态起一个真实的 HTTP 服务，

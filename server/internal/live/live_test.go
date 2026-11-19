@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"eucli-deep-wiki-server/internal/config"
+	"eucli-deep-wiki-server/internal/serviceprofile"
 	"eucli-deep-wiki-server/internal/vault"
 )
 
@@ -108,6 +109,116 @@ func TestOpenBuildsInitialSnapshot(t *testing.T) {
 	}
 }
 
+// 首次启动：数据目录里没有画像时，按配置文件的初值生成一份并照它开服务。
+func TestOpenGeneratesProfileFromConfigSeed(t *testing.T) {
+	t.Parallel()
+
+	env := newTestEnv(t, testConfigBody(), testIndexOne)
+
+	profile, err := serviceprofile.Load(env.dataDir)
+	if err != nil {
+		t.Fatalf("画像没有落盘: %v", err)
+	}
+	if profile.Port != config.DefaultPort || profile.Key != "0123456789abcdef" {
+		t.Fatalf("Profile = %#v, want 配置初值", profile)
+	}
+
+	snapshot := env.state.Snapshot()
+	if want := "127.0.0.1:9997"; snapshot.Config.HTTPAddress != want {
+		t.Fatalf("HTTPAddress = %q, want %q", snapshot.Config.HTTPAddress, want)
+	}
+	if keys := snapshot.Config.APIKeys; len(keys) != 1 || keys[0] != profile.Key {
+		t.Fatalf("APIKeys = %#v, want 画像里的那一把", keys)
+	}
+}
+
+// 画像已存在：它就是权威，配置文件的初值再不同也不作数。
+func TestOpenUsesExistingProfileOverConfig(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	profilePath := filepath.Join(dataDir, serviceprofile.FileName)
+	const existing = "{\n  \"port\": 12001,\n  \"key\": \"platform-issued-key-0001\"\n}\n"
+	if err := os.WriteFile(profilePath, []byte(existing), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	writeTestFile(t, configPath, testConfigBody(), dataDir)
+
+	state, err := Open(Options{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	snapshot := state.Snapshot()
+	if want := "127.0.0.1:12001"; snapshot.Config.HTTPAddress != want {
+		t.Fatalf("HTTPAddress = %q, want %q", snapshot.Config.HTTPAddress, want)
+	}
+	if keys := state.APIKeys(); len(keys) != 1 || keys[0] != "platform-issued-key-0001" {
+		t.Fatalf("APIKeys() = %#v, want 画像里的那一把", keys)
+	}
+	if payload, err := os.ReadFile(profilePath); err != nil || string(payload) != existing {
+		t.Fatalf("既有画像被改写了: %v\n%s", err, payload)
+	}
+}
+
+// 画像不合法：启动直接失败并说清是哪个文件，不带着猜测起床。
+func TestOpenFailsOnInvalidProfile(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	profilePath := filepath.Join(dataDir, serviceprofile.FileName)
+	if err := os.WriteFile(profilePath, []byte(`{"port": 9997, "key": "short"}`), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	writeTestFile(t, configPath, testConfigBody(), dataDir)
+
+	_, err := Open(Options{ConfigPath: configPath})
+	if err == nil {
+		t.Fatal("Open() error = nil, want 不合法画像被拒绝")
+	}
+	if !strings.Contains(err.Error(), profilePath) {
+		t.Fatalf("错误里没说是哪个文件: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "key") {
+		t.Fatalf("错误里没说哪儿不对: %s", err.Error())
+	}
+}
+
+// 命令行给出的监听地址仍然最高：画像管端口，显式指定压过它，且重载后依然如此。
+func TestHTTPAddressOverrideWinsOverProfile(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	writeTestFile(t, configPath, testConfigBody(), dataDir)
+
+	state, err := Open(Options{ConfigPath: configPath, HTTPAddress: "0.0.0.0:12005"})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if got := state.Snapshot().Config.HTTPAddress; got != "0.0.0.0:12005" {
+		t.Fatalf("HTTPAddress = %q", got)
+	}
+
+	// 画像里记的仍是配置文件那个端口：显式覆盖只在这次运行里说话。
+	profile, err := serviceprofile.Load(dataDir)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if profile.Port != config.DefaultPort {
+		t.Fatalf("Profile.Port = %d, want %d", profile.Port, config.DefaultPort)
+	}
+
+	state.Reload()
+	if got := state.Snapshot().Config.HTTPAddress; got != "0.0.0.0:12005" {
+		t.Fatalf("重载后 HTTPAddress = %q", got)
+	}
+}
+
 func TestEnsureFreshPicksUpAddedRepository(t *testing.T) {
 	t.Parallel()
 
@@ -156,23 +267,45 @@ func TestEnsureFreshDropsRemovedRepositoryFromView(t *testing.T) {
 	}
 }
 
-func TestEnsureFreshReloadsAPIKeys(t *testing.T) {
+// 画像存在即为权威：改配置文件里的钥匙列表改不动运行期的口令，
+// 否则平台读到的口令与真正生效的口令会分家。
+func TestReloadKeepsProfileAsKeyAuthority(t *testing.T) {
 	t.Parallel()
 
 	env := newTestEnv(t, testConfigBody(), testIndexOne)
-	if got := env.state.APIKeys(); len(got) != 1 {
+	if got := env.state.APIKeys(); len(got) != 1 || got[0] != "0123456789abcdef" {
 		t.Fatalf("APIKeys() = %#v", got)
 	}
 
 	env.rewriteConfig(t, `{
 		"dataRoot": "$DATA_ROOT",
-		"apiKeys": ["0123456789abcdef", "fedcba9876543210"]
+		"apiKeys": ["fedcba9876543210", "fedcba9876543211"]
 	}`)
 
 	env.state.EnsureFresh()
 	keys := env.state.APIKeys()
-	if len(keys) != 2 || keys[1] != "fedcba9876543210" {
-		t.Fatalf("APIKeys() = %#v", keys)
+	if len(keys) != 1 || keys[0] != "0123456789abcdef" {
+		t.Fatalf("APIKeys() = %#v, want 画像里的那一把", keys)
+	}
+}
+
+// 配置文件里的端口同样不再决定运行期地址：画像是门牌号的权威。
+func TestPortChangeInConfigIsIgnoredWhileProfileExists(t *testing.T) {
+	t.Parallel()
+
+	env := newTestEnv(t, testConfigBody(), testIndexOne)
+	env.rewriteConfig(t, `{
+		"dataRoot": "$DATA_ROOT",
+		"httpAddress": "127.0.0.1:9998",
+		"apiKeys": ["0123456789abcdef"]
+	}`)
+
+	// 改的是「已经不管事」的字段：既不该换地址，也不该提示重启。
+	if got := env.state.Reload().NeedsRestart; len(got) != 0 {
+		t.Fatalf("NeedsRestart = %#v, want 空", got)
+	}
+	if got := env.state.Snapshot().Config.HTTPAddress; got != "127.0.0.1:9997" {
+		t.Fatalf("HTTPAddress = %q, want 画像端口", got)
 	}
 }
 
@@ -297,10 +430,11 @@ func TestNeedsRestartTracksStartupBoundFields(t *testing.T) {
 		t.Fatalf("启动时 NeedsRestart = %#v", got)
 	}
 
-	// 监听地址改了：热加载拿不到它，必须在状态里点名要求重启。
+	// 监听宿主改了（端口归画像管，宿主仍由配置文件说了算）：
+	// 热加载拿不到它，必须在状态里点名要求重启。
 	env.rewriteConfig(t, `{
 		"dataRoot": "$DATA_ROOT",
-		"httpAddress": "127.0.0.1:9998",
+		"httpAddress": "0.0.0.0:9997",
 		"apiKeys": ["0123456789abcdef"]
 	}`)
 

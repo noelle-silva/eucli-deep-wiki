@@ -11,5 +11,5 @@ import (
 )
 
 func main() {
-	os.Exit(service.Main(os.Args[1:], os.Stderr))
+	os.Exit(service.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

@@ -14,6 +14,9 @@ import (
 // 因此不会出现「同步清单已经换了、查询仍然 404」这种错位。
 type Snapshot struct {
 	// Config 是当前生效的配置。
+	//
+	// 其中的 HTTPAddress 与 APIKeys 已经由服务画像接管（命令行给出的监听地址再压一层），
+	// 因此读到它们的人不需要、也不应该再去读画像或配置文件。
 	Config *config.Config
 	// Repositories 是当前生效的仓库清单。
 	Repositories []repoindex.Repository

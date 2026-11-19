@@ -7,6 +7,9 @@
 // 重载时先构建完整的新快照，再整体替换，读者拿到的永远是完整的一份，
 // 既不会读到半新半旧，也不会被一次失败的解析拖垮：解析失败时旧配置
 // 与旧视图继续生效，失败原因记录在最近一次重载结果里。
+//
+// 门牌号与口令（服务画像）是启动期事实：它在首次加载配置时定下，之后每次重载
+// 都重新落到生效配置上，因此配置文件怎么改也换不掉运行期的端口与钥匙。
 package live
 
 import (
@@ -21,6 +24,7 @@ import (
 
 	"eucli-deep-wiki-server/internal/config"
 	"eucli-deep-wiki-server/internal/repoindex"
+	"eucli-deep-wiki-server/internal/serviceprofile"
 	"eucli-deep-wiki-server/internal/vault"
 )
 
@@ -41,6 +45,10 @@ type State struct {
 	configPath  string
 	httpAddress string
 
+	// profile 是启动时定下的门牌号与口令。它是这两个事实的权威：
+	// 每次都随配置一起落到生效视图里，因此重载换不回配置文件里的旧值。
+	profile serviceprofile.Profile
+
 	// startup 是启动时确定的配置，用来判定哪些字段改了必须重启。
 	startup *config.Config
 	// repositoryDir 与 indexPath 在启动时固化：读写位置随重载漂移没有意义。
@@ -59,14 +67,29 @@ type State struct {
 //
 // 首次加载失败属于启动期错误，直接返回给调用方；服务不该带着空配置起床。
 func Open(options Options) (*State, error) {
-	cfg, err := loadConfig(options.ConfigPath, options.HTTPAddress)
+	cfg, err := config.Load(options.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
 
+	// 画像：读现成的，或按配置文件里的初值生成一份落盘。
+	// 它是端口与口令的权威，启动时定下就不再变——要换门牌号或口令得改画像并重启。
+	profile, err := serviceprofile.Ensure(cfg.DataRoot, serviceprofile.Seed{
+		Port: cfg.ListenPort(),
+		Key:  cfg.FirstAPIKey(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := adopt(cfg, profile, options.HTTPAddress); err != nil {
+		return nil, err
+	}
+	log.Printf("service profile %s: port %d", serviceprofile.Path(cfg.DataRoot), profile.Port)
+
 	state := &State{
 		configPath:    options.ConfigPath,
 		httpAddress:   options.HTTPAddress,
+		profile:       profile,
 		startup:       cfg,
 		repositoryDir: cfg.RepositoryDir(),
 		indexPath:     cfg.RepositoryIndexPath(),
@@ -175,7 +198,7 @@ func (s *State) refresh(force bool) Result {
 	if reloadConfig {
 		// 失败也记下这次看到的指纹：同一份坏文件不反复报错，改好后再重试。
 		next.configStamp = configStamp
-		cfg, err := loadConfig(s.configPath, s.httpAddress)
+		cfg, err := s.loadConfig()
 		next.configInSync = err == nil
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("配置加载失败（%s）: %v", s.configPath, err))
@@ -254,18 +277,32 @@ func (s *State) notifyChanged() {
 	s.changed = make(chan struct{})
 }
 
-// loadConfig 读取配置并套用命令行给出的监听地址覆盖。
-func loadConfig(path string, httpAddress string) (*config.Config, error) {
-	cfg, err := config.Load(path)
+// loadConfig 读取配置，并套用启动期定下的门牌号与口令。
+//
+// 首次加载与每一次重载都走这里，因此画像的权威不会被一次重载换掉。
+func (s *State) loadConfig() (*config.Config, error) {
+	cfg, err := config.Load(s.configPath)
 	if err != nil {
 		return nil, err
 	}
-	if httpAddress != "" {
-		if err := cfg.SetHTTPAddress(httpAddress); err != nil {
-			return nil, err
-		}
+	if err := adopt(cfg, s.profile, s.httpAddress); err != nil {
+		return nil, err
 	}
 	return cfg, nil
+}
+
+// adopt 把启动期定下的门牌号与口令落到配置上。
+//
+// 顺序即优先级：画像接管端口与钥匙，命令行给出的监听地址再覆盖一次。
+// 配置文件里的 httpAddress 只剩监听宿主与「首次生成画像」的端口初值。
+func adopt(cfg *config.Config, profile serviceprofile.Profile, httpAddress string) error {
+	if err := cfg.AdoptProfile(profile.Port, profile.Key); err != nil {
+		return err
+	}
+	if httpAddress == "" {
+		return nil
+	}
+	return cfg.SetHTTPAddress(httpAddress)
 }
 
 // newVault 按仓库清单建立只读视图。

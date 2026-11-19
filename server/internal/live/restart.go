@@ -16,9 +16,12 @@ const (
 
 // startupChanges 列出改了但必须重启才能生效的字段。
 //
-// 这几个字段在启动时就被固化：监听地址由 http.Server 持有，数据根目录决定
+// 这几个字段在启动时就被固化：监听地址由 http.Server 持有（端口归画像，宿主归配置文件），数据根目录决定
 // 索引文件与状态文件的位置，仓库目录与索引文件名决定实际读写位置。
 // 其余字段都在重载后立即生效，因此不会出现在这里。
+//
+// 比较的是「已经由画像接管之后」的生效地址：只改配置文件里的端口不会出现在这里，
+// 那个端口已经不管事了，提示重启等于说谎。
 func startupChanges(startup *config.Config, current *config.Config) []string {
 	changes := make([]string, 0, 4)
 	if startup.HTTPAddress != current.HTTPAddress {
