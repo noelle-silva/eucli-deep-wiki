@@ -1,0 +1,33 @@
+{
+  "$comment": "eucli-deep-wiki 应用协议字典：只承载本应用自己的开发动作与成品产出。动作由中央工具以「应用名 + 动作」调用，命令的工作目录即本协议目录；成品由工具商店化后落在本目录 dist/。发布由中央工具以主仓库凭据完成，应用不持有发布逻辑与凭据。",
+  "runner": "node",
+  "actions": {
+    "helloworld": "echo helloworld",
+    "package": {
+      "command": "go -C ../tools/pack run .",
+      "artifact": {
+        "path": "zipPath",
+        "name": "zipName",
+        "sha256": "sha256"
+      },
+      "storePackage": true
+    },
+    "stage-dev": {
+      "command": "go -C ../tools/pack run .",
+      "artifact": {
+        "path": "zipPath"
+      },
+      "storePackage": {
+        "form": "exploded",
+        "outDir": "../.dev-workspace/.dev-runtime/eucli-deep-wiki"
+      }
+    },
+    "version-check": "go -C ../tools/version run .",
+    "version-patch": "go -C ../tools/version run . -bump patch",
+    "version-minor": "go -C ../tools/version run . -bump minor",
+    "version-major": "go -C ../tools/version run . -bump major",
+    "server-test": "go -C ../server test ./...",
+    "cli-test": "go -C ../cli test ./...",
+    "guard-test": "go -C ../guard test ./..."
+  }
+}

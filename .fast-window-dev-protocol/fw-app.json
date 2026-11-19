@@ -1,0 +1,28 @@
+{
+  "type": "service-app",
+  "id": "eucli-deep-wiki",
+  "name": "eucli-deep-wiki",
+  "description": "参考仓库服务端：托管参考仓库并对外提供检索与管理接口",
+  "versionSource": "server/internal/release/release.json",
+  "package": {
+    "windowsExecutable": "eucli-deep-wiki-server.exe",
+    "icon": ".fast-window-dev-protocol/assets/icon.svg"
+  },
+  "service": {
+    "start": {
+      "args": [
+        "-config",
+        "config.json"
+      ]
+    },
+    "ready": {
+      "type": "log",
+      "match": "is ready",
+      "timeoutSeconds": 30
+    },
+    "stop": {
+      "type": "terminate"
+    }
+  },
+  "commands": []
+}

@@ -19,3 +19,5 @@ data/
 *.test
 dist/
 tmp/
+# 开发暂存区：stage-dev 把成品散装铺在这里，属于本机构建结果
+.dev-workspace/

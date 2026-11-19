@@ -4,4 +4,6 @@ use (
 	./cli
 	./guard
 	./server
+	./tools/pack
+	./tools/version
 )
