@@ -127,13 +127,29 @@ func TestLoadRejectsNonPositiveSyncInterval(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresAPIKeys(t *testing.T) {
+// 整项不写是合法配置：首次启动由服务画像生成一把强口令并落盘。
+func TestLoadAllowsMissingAPIKeys(t *testing.T) {
 	t.Parallel()
 
 	path := writeConfig(t, `{}`)
 
-	if _, err := Load(path); err == nil {
-		t.Fatal("Load() error = nil, want missing apiKeys error")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want 允许不写 apiKeys", err)
+	}
+	if len(cfg.APIKeys) != 0 {
+		t.Fatalf("APIKeys = %#v, want 空", cfg.APIKeys)
+	}
+}
+
+// 空数组与不写等价，同样是「让人自己按默认规矩生成」。
+func TestLoadAllowsEmptyAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	path := writeConfig(t, `{"apiKeys": []}`)
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want 允许空数组", err)
 	}
 }
 

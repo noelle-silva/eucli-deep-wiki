@@ -289,9 +289,12 @@ func ValidatePort(port int) error {
 }
 
 // validateAPIKeys 校验钥匙列表：逐把过 ValidateAPIKey，再拒绝重复。
+//
+// 允许整项不写：首次启动会由服务画像生成一把强口令并落盘，之后以画像为准。
+// 写了的就必须合法——给了却写错，说明人有意指定过，这时候静默换成随机会更难查。
 func validateAPIKeys(keys []string) error {
 	if len(keys) == 0 {
-		return errors.New("apiKeys must contain at least one key")
+		return nil
 	}
 
 	seen := make(map[string]struct{}, len(keys))
