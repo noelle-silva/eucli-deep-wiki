@@ -48,7 +48,7 @@ if errorlevel 1 (
 ) else (
     echo [eucli] Windows 服务: 已注册
 )
-tasklist /FI "IMAGENAME eq %EUCLI_EXE%" /NH 2>nul | findstr /I /C:"%EUCLI_EXE%" >nul
+call "%~dp0lib\is-running.bat"
 if errorlevel 1 (
     echo [eucli] 进程: 未运行
 ) else (

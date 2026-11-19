@@ -1,10 +1,12 @@
+# 只描述服务端一个进程：命令行不进镜像，也不在这里出现。
 services:
-  reference-sync:
+  eucli-deep-wiki-server:
     build:
       context: .
       dockerfile: Dockerfile
-    image: eucli-deep-wiki:latest
-    command: ["serve", "--service-config", "/app/config.json"]
+    image: eucli-deep-wiki-server:latest
+    # 启动参数由镜像的 CMD 提供（-config /app/config.json），此处不再抄一遍。
+    # 需要换配置路径或追加参数时，在 docker-compose.override.yml 里用 command 覆盖。
     ports:
       - "${EUCLI_BIND_ADDRESS:-127.0.0.1:9997}:9997"
     volumes:

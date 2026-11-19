@@ -1,6 +1,10 @@
 .git/
 .gitnexus/
 .dev-management/
+# 并行工作区：每个工作区都有一份完整源码，进上下文只会白搬多份副本
+.worktrees/
+# 命令行不进镜像，镜像构建也不依赖它的源码
+cli/
 configs/config.json
 data/
 dist/

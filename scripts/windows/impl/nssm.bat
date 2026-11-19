@@ -25,7 +25,8 @@ if not errorlevel 1 (
     exit /b 1
 )
 
-"%NSSM_EXE%" install "%EUCLI_SERVICE_NAME%" "%EXE_PATH%" serve --service-config "%CFG_PATH%" >nul
+rem 服务端程序直接带自己的参数注册，参数与前台执行体同源（load-env.bat 的 SERVER_ARGS）。
+"%NSSM_EXE%" install "%EUCLI_SERVICE_NAME%" "%EXE_PATH%" %SERVER_ARGS% >nul
 if errorlevel 1 (
     echo [eucli] 注册服务失败，可能需要管理员权限。
     exit /b 1

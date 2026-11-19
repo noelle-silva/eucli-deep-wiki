@@ -2,17 +2,21 @@
 #
 # 分工约定：
 #   取值（路径、监听地址、端口）→ 改 .env
-#   结构（多加挂载、资源限制、附加环境变量）→ 写本文件
+#   结构（多加挂载、资源限制、附加环境变量、启动参数）→ 写本文件
 #
 # Compose 只自动合并「与基础文件同目录」的覆盖文件，因此本文件必须与
 # docker-compose.yml 放在一起，改完直接 docker compose up -d 即可。
 # 真实的 docker-compose.override.yml 不参与版本管理。
 
 services:
-  reference-sync:
+  eucli-deep-wiki-server:
     # 附加挂载：把宿主机的日志目录挂进容器
     # volumes:
     #   - "D:/eucli-deploy/logs:/app/logs"
+
+    # 启动参数：默认由镜像 CMD 给出（-config /app/config.json）。
+    # 配置挂载点换了、或要临时改监听地址时，在这里整条覆盖。
+    # command: ["-config", "/etc/eucli/config.json", "-http-address", "0.0.0.0:9997"]
 
     # 资源上限：参考仓库体积大时按机器情况收紧
     # deploy:
