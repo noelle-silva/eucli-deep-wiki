@@ -221,13 +221,12 @@ func TestTreeSendsExcludeAndHidesDependencyDirectories(t *testing.T) {
 	if got, want := recorder.byPath()[""].Get("exclude"), strings.Join(dependencyDirs, ","); got != want {
 		t.Fatalf("exclude = %q, want %q", got, want)
 	}
-	for _, want := range []string{"默认不列出依赖与缓存目录", "node_modules", "--all"} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("stderr 缺少 %q：%q", want, stderr)
-		}
-	}
 	if strings.Contains(stdout, "依赖") {
 		t.Fatalf("说明不该混进 stdout：%q", stdout)
+	}
+	// 输出被接进缓冲区（等同管道），长期规矩一个字都不说：批量探查时不该刷屏。
+	if stderr != "" {
+		t.Fatalf("数据被管道接走时不该有说明，实际 stderr = %q", stderr)
 	}
 }
 
@@ -323,8 +322,9 @@ func TestOverviewHidesDependencyDirectoriesByDefault(t *testing.T) {
 	if !strings.Contains(stdout, "== 目录（2 层，1 项） ==") {
 		t.Fatalf("条目计数应按排除后算：\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "默认不列出依赖与缓存目录") {
-		t.Fatalf("stderr 应说明排除了依赖目录：%q", stderr)
+	// 输出被接进缓冲区（等同管道）：长期规矩一个字都不说。
+	if stderr != "" {
+		t.Fatalf("数据被管道接走时不该有说明，实际 stderr = %q", stderr)
 	}
 
 	code, stdout, stderr = runWithServer(t, server, "overview", "example", "--all")

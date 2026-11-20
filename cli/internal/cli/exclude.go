@@ -52,12 +52,18 @@ func (f *excludeFlags) names() []string {
 //
 // 默认压掉一批东西是命令替用户做的决定，做过的决定必须说出来，否则「为什么这里
 // 没有 node_modules」只能靠猜。说明走 stderr，stdout 只放数据。
-func (f *excludeFlags) announce(stderr io.Writer) {
+//
+// 这条说的是一个长期有效的规矩，不是这次请求的结果，所以按「有没有人在读屏幕」
+// 决定说不说、说几遍——见 noticeLog。批量探查时它只出现一次，且不会挤进管道。
+func (f *excludeFlags) announce(stderr io.Writer, notices *noticeLog, interactive bool) {
 	names := f.names()
 	if len(names) == 0 {
 		return
 	}
-	fmt.Fprintf(stderr, "（默认不列出依赖与缓存目录：%s；加 --all 改为一并列出）\n", strings.Join(names, " "))
+	notices.noteOnce(stderr, interactive, fmt.Sprintf(
+		"（默认不列出依赖与缓存目录：%s；加 --all 改为一并列出）",
+		strings.Join(names, " "),
+	))
 }
 
 // keep 留下允许出现的条目：命中清单的目录、以及它们的全部后代都不出现。

@@ -68,6 +68,7 @@ func runOverview(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	ctx := context.Background()
+	notices := &noticeLog{}
 	repo := flags.Arg(0)
 
 	meta, err := client.Meta(ctx, repo)
@@ -97,7 +98,7 @@ func runOverview(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	renderOverview(stdout, stderr, meta, tree, sections, files)
-	excluded.announce(stderr)
+	excluded.announce(stderr, notices, isTerminal(stdout))
 	return 0
 }
 

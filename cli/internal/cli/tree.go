@@ -47,6 +47,7 @@ func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 		return exitFailure
 	}
 
+	notices := &noticeLog{}
 	repo := flags.Arg(0)
 
 	// 不给目录就是只看仓库根：空路径代表根，仍然走同一套多段编排。
@@ -73,13 +74,16 @@ func runTree(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	noteClamped(stderr, "depth", *depth, params.MaxTreeDepth)
 	if batch.anyValue() {
-		excluded.announce(stderr)
+		excluded.announce(stderr, notices, isTerminal(stdout))
 	}
 	return code
 }
 
 // noteTreeTruncated 说明这一段被服务端压到了什么程度：结果被截断时给出继续看的
 // 办法。多段输出时带上这一段的标签，否则不知道说的是哪一段。
+//
+// 提示必须指向真实存在的开关：这里说的是「减小 --depth」——把层数收窄了条目自然
+// 变少，甚至能绕开截断；`--dirs-only` 管的是只看骨架，跟截断不是一回事。
 func noteTreeTruncated(stderr io.Writer, name string, tree apiclient.Tree, withLabel bool) {
 	if !tree.Truncated {
 		return
@@ -89,5 +93,5 @@ func noteTreeTruncated(stderr io.Writer, name string, tree apiclient.Tree, withL
 	if withLabel {
 		prefix = name + ": "
 	}
-	fmt.Fprintf(stderr, "%s（结果已截断：共 %d 项；可加 --dirs-only 或从子目录继续）\n", prefix, len(tree.Entries))
+	fmt.Fprintf(stderr, "%s（结果已截断：共 %d 项；可减小 --depth 再试一次）\n", prefix, len(tree.Entries))
 }
