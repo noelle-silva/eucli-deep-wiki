@@ -18,7 +18,8 @@ const usageText = `eucli-dw —— 参考仓库的查询与管理工具
 查询命令（需要先配置服务地址与 key）:
   repos [--sort name|time|size]    仓库清单：分支、提交、上次同步、体积、状态
   overview [参数] <仓库>           仓库概览：目录骨架 + README 开头 + 清单文件
-  tree [参数] <仓库> [目录]        列出目录（--depth N 一次展开多层；--dirs-only 只看骨架）
+  tree [参数] <仓库> [目录...]     列出目录（--depth N 一次展开多层；--dirs-only 只看骨架；
+                                   可一次给多个目录；默认不列依赖与缓存目录，--all 一并列出）
   get [参数] <仓库> <路径>...      读取文件（可多路径；--lines 切段；--max-bytes 限长）
   search [参数] <仓库> <关键词>    按内容检索（--path 限目录；--context 上下文行；--limit 条数）
   find [参数] <仓库> <文件名>      按文件名查找（默认精确；--substring 改为包含；支持 * 通配）
@@ -68,6 +69,7 @@ const usageText = `eucli-dw —— 参考仓库的查询与管理工具
   eucli-dw repo compact --dry-run
   eucli-dw overview claw-code
   eucli-dw tree claw-code --depth 2 --dirs-only
+  eucli-dw tree claw-code src docs scripts --depth 2
   eucli-dw get claw-code cli.js --lines 362-520
   eucli-dw search claw-code subagent --context 2 --limit 20
   eucli-dw find claw-code "*.md" --path docs --substring

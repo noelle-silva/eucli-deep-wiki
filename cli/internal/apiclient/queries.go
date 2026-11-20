@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -70,6 +71,11 @@ type TreeOptions struct {
 	Depth int
 	// DirsOnly 只要目录，用于快速看骨架。
 	DirsOnly bool
+	// Exclude 是要排除的目录名（按名字精确匹配，大小写不敏感）；命中名字的目录
+	// 不返回，也不进入其内部遍历。空表示不排除任何东西。
+	//
+	// 服务端只认「按名字排除」这个通用能力，「哪些名字算依赖」由调用方决定。
+	Exclude []string
 }
 
 // SearchOptions 描述一次检索的边界。
@@ -256,6 +262,9 @@ func (c *Client) Tree(ctx context.Context, name string, options TreeOptions) (Tr
 	}
 	if options.DirsOnly {
 		query.Set("dirsOnly", "true")
+	}
+	if len(options.Exclude) > 0 {
+		query.Set("exclude", strings.Join(options.Exclude, ","))
 	}
 
 	var tree Tree

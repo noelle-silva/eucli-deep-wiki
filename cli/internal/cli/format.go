@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"eucli-dw/internal/apiclient"
 )
 
 // writeJSON 输出缩进的 JSON，供脚本与 Agent 直接消费。
@@ -16,6 +18,19 @@ func writeJSON(stdout io.Writer, stderr io.Writer, value any) int {
 		return exitFailure
 	}
 	return 0
+}
+
+// writeEntries 输出目录项：目录带尾斜杠，文件带字节数。
+//
+// tree 与 overview 的骨架用的是同一份口径，两处不各写一遍。
+func writeEntries(stdout io.Writer, entries []apiclient.Entry) {
+	for _, entry := range entries {
+		if entry.Type == "dir" {
+			fmt.Fprintf(stdout, "%s/\n", entry.Path)
+			continue
+		}
+		fmt.Fprintf(stdout, "%s\t%d\n", entry.Path, entry.Size)
+	}
 }
 
 // formatBytes 把字节数写成便于阅读的单位。

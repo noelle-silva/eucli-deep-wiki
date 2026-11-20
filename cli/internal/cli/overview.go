@@ -46,6 +46,8 @@ func runOverview(args []string, stdout io.Writer, stderr io.Writer) int {
 	readmeLines := flags.Int("readme-lines", 40, "README 展示多少行，0 表示不展示")
 	manifestCount := flags.Int("manifests", 3, "最多展示几个清单文件，0 表示不展示")
 	manifestLines := flags.Int("manifest-lines", 40, "每个清单文件展示多少行")
+	excluded := &excludeFlags{}
+	excluded.register(flags)
 
 	if err := parseArgs(flags, args); err != nil {
 		return parseExitCode(err)
@@ -73,7 +75,7 @@ func runOverview(args []string, stdout io.Writer, stderr io.Writer) int {
 		reportError(stderr, err, options.asJSON)
 		return exitCodeFor(err)
 	}
-	tree, err := client.Tree(ctx, repo, apiclient.TreeOptions{Depth: *depth})
+	tree, err := listTree(ctx, client, repo, apiclient.TreeOptions{Depth: *depth}, excluded)
 	if err != nil {
 		reportError(stderr, err, options.asJSON)
 		return exitCodeFor(err)
@@ -95,6 +97,7 @@ func runOverview(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	renderOverview(stdout, stderr, meta, tree, sections, files)
+	excluded.announce(stderr)
 	return 0
 }
 
@@ -132,15 +135,11 @@ func renderOverview(
 	}
 
 	fmt.Fprintf(stdout, "\n== 目录（%d 层，%d 项） ==\n", tree.Depth, len(tree.Entries))
-	for _, entry := range tree.Entries {
-		if entry.Type == "dir" {
-			fmt.Fprintf(stdout, "%s/\n", entry.Path)
-			continue
-		}
-		fmt.Fprintf(stdout, "%s\t%d\n", entry.Path, entry.Size)
-	}
+	writeEntries(stdout, tree.Entries)
 	if tree.Truncated {
-		fmt.Fprintln(stderr, "（目录已截断，可加 --dirs-only 或减小 --depth）")
+		// 只有真正存在的开关才配写进提示：overview 没有 --dirs-only，
+		// 指过去只会把人带到沟里。能收窄条目的只有 --depth。
+		fmt.Fprintln(stderr, "（目录已截断，可减小 --depth 再试一次）")
 	}
 
 	for index, section := range sections {

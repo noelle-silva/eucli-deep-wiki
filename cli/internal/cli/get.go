@@ -29,17 +29,17 @@ func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.NArg() < 2 {
 		fmt.Fprintln(stderr, "用法: eucli-dw get [参数] <仓库> <路径>...")
-		return 2
+		return exitUsage
 	}
 
 	span, err := params.ParseLineRange(*lines)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 2
+		return exitUsage
 	}
 	if *maxBytes < 0 {
 		fmt.Fprintln(stderr, "--max-bytes 必须是非负整数")
-		return 2
+		return exitUsage
 	}
 
 	client, err := options.client()
@@ -52,83 +52,21 @@ func runGet(args []string, stdout io.Writer, stderr io.Writer) int {
 	targets := flags.Args()[1:]
 	request := apiclient.FileOptions{Lines: span.String(), MaxBytes: *maxBytes}
 
-	outcomes := gather(len(targets), 0, func(index int) (apiclient.File, error) {
+	batch := fetchSegments(targets, func(target string) (apiclient.File, error) {
 		fileOptions := request
-		fileOptions.Path = targets[index]
+		fileOptions.Path = target
 		return client.File(context.Background(), repo, fileOptions)
 	})
 
 	if options.asJSON {
-		return writeFilesJSON(stdout, stderr, targets, outcomes)
+		return writeSegmentsJSON(stdout, stderr, "files", batch)
 	}
 
-	multiple := len(targets) > 1
 	requested := !span.IsZero() || *maxBytes > 0
-	code := 0
-	truncated := false
-
-	for index, result := range outcomes {
-		if result.err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", targets[index], result.err)
-			if !truncated {
-				truncated = true
-				code = exitCodeFor(result.err)
-			}
-			continue
-		}
-
-		if multiple {
-			fmt.Fprintf(stdout, "==> %s <==\n", result.value.Path)
-		}
-		writeFileContent(stdout, result.value)
-		writeRangeHint(stderr, targets[index], result.value, multiple, requested)
-	}
-
-	if truncated {
-		return code
-	}
-	return 0
-}
-
-// writeFilesJSON 输出结构化结果：单文件保持一段对象，多文件包成 files 数组。
-//
-// 一个都没取到时走统一的错误输出，与其它命令同形；部分成功时把失败原因
-// 放进 payload 的 failures，失败的事实不会因为「另外几个读到了」而消失。
-func writeFilesJSON(stdout io.Writer, stderr io.Writer, targets []string, outcomes []outcome[apiclient.File]) int {
-	files := make([]apiclient.File, 0, len(outcomes))
-	failures := make([]string, 0, len(outcomes))
-	var firstErr error
-
-	for index, result := range outcomes {
-		if result.err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", targets[index], result.err))
-			if firstErr == nil {
-				firstErr = result.err
-			}
-			continue
-		}
-		files = append(files, result.value)
-	}
-
-	if firstErr != nil && len(files) == 0 {
-		reportError(stderr, firstErr, true)
-		return exitCodeFor(firstErr)
-	}
-
-	var payload any = files
-	switch {
-	case len(targets) == 1:
-		payload = files[0]
-	case len(failures) > 0:
-		payload = map[string]any{"files": files, "failures": failures}
-	}
-	if writeCode := writeJSON(stdout, stderr, payload); writeCode != 0 {
-		return writeCode
-	}
-	if firstErr != nil {
-		return exitCodeFor(firstErr)
-	}
-	return 0
+	return renderSegments(stdout, stderr, batch, func(out io.Writer, name string, file apiclient.File, withLabel bool) {
+		writeFileContent(out, file)
+		writeRangeHint(stderr, name, file, withLabel, requested)
+	})
 }
 
 // writeFileContent 输出正文；末尾缺换行时补一个，避免下一段与它粘在一起。

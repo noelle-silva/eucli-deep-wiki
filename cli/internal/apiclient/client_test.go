@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,42 @@ func TestTreeSendsDepthAndDirsOnly(t *testing.T) {
 	}
 	if tree.Depth != 3 {
 		t.Fatalf("Depth = %d", tree.Depth)
+	}
+}
+
+// TestTreeJoinsExcludeNames 守住 exclude 的线上写法：逗号分隔的名表，空列表时不发。
+func TestTreeJoinsExcludeNames(t *testing.T) {
+	t.Parallel()
+
+	queries := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		_, _ = w.Write([]byte(`{"repo":"example","path":"","depth":1,"entries":[],"truncated":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, testKey)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := client.Tree(context.Background(), "example", TreeOptions{Exclude: []string{"node_modules", "vendor"}}); err != nil {
+		t.Fatalf("Tree() error = %v", err)
+	}
+	if _, err := client.Tree(context.Background(), "example", TreeOptions{}); err != nil {
+		t.Fatalf("Tree() error = %v", err)
+	}
+
+	// 逗号在查询串里会被编码成 %2C，服务端解出来仍是逗号分隔的名表。
+	decoded, err := url.ParseQuery(queries[0])
+	if err != nil {
+		t.Fatalf("ParseQuery() error = %v", err)
+	}
+	if got := decoded.Get("exclude"); got != "node_modules,vendor" {
+		t.Fatalf("exclude = %q", got)
+	}
+	if strings.Contains(queries[1], "exclude") {
+		t.Fatalf("不给名字时不该带 exclude：%q", queries[1])
 	}
 }
 
