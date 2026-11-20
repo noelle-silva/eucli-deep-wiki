@@ -27,6 +27,11 @@ type TreeOptions struct {
 	Depth int
 	// DirsOnly 只返回目录，用于快速看骨架。
 	DirsOnly bool
+	// Exclude 是按名字排除的目录名单：命中的目录不返回，也不进入其内部遍历。
+	//
+	// 它只过滤遍历途中遇到的目录，不作用于 Path 点名的展开起点——那是调用方
+	// 的显式选择，点进去看就不该被自己的排除清单挡住。
+	Exclude ExcludedDirs
 }
 
 // Tree 是一次目录展开的结果。
@@ -80,6 +85,7 @@ func (v *Vault) Tree(name string, options TreeOptions) (Tree, error) {
 		root:     root,
 		budget:   v.limits.MaxTreeEntries,
 		dirsOnly: options.DirsOnly,
+		exclude:  options.Exclude,
 	}
 	if err := walk.expand(rel, 1, depth); err != nil {
 		return Tree{}, err
@@ -100,6 +106,7 @@ type treeWalker struct {
 	root      *os.Root
 	budget    int
 	dirsOnly  bool
+	exclude   ExcludedDirs
 	entries   []Entry
 	truncated bool
 }
@@ -146,9 +153,9 @@ func (w *treeWalker) readChildren(rel string, level int, remaining int) ([]Entry
 	}
 	defer dir.Close()
 
-	items, err := dir.ReadDir(remaining + 1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, describe(err)
+	items, err := w.readCandidates(dir, remaining+1)
+	if err != nil {
+		return nil, err
 	}
 	// 多读的一项只用来判断「还有更多」，它本身不进结果。
 	if len(items) > remaining {
@@ -189,4 +196,30 @@ func (w *treeWalker) readChildren(rel string, level int, remaining int) ([]Entry
 		return children[left].Name < children[right].Name
 	})
 	return children, nil
+}
+
+// readCandidates 读出最多 want 个不在排除名单里的条目。
+//
+// 被排除的目录在读到名字的那一刻就丢掉：它们既不进结果、也不会被继续展开。
+// 因此「多读一项判断还有没有更多」读的是真正可能出现在结果里的项——排除发生
+// 在遍历之前，条目的配额不会被排除目录占掉。
+func (w *treeWalker) readCandidates(dir *os.File, want int) ([]os.DirEntry, error) {
+	items := make([]os.DirEntry, 0, want)
+	for len(items) < want {
+		batch, err := dir.ReadDir(want - len(items))
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, describe(err)
+		}
+		for _, item := range batch {
+			if w.exclude.Skips(item.Name(), item.IsDir()) {
+				continue
+			}
+			items = append(items, item)
+		}
+		if err != nil {
+			// io.EOF：这一层已经读完，凑不够 want 就是凑不够。
+			break
+		}
+	}
+	return items, nil
 }

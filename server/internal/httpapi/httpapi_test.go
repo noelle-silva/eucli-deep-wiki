@@ -803,6 +803,86 @@ func TestShowTreeFiltersDirectories(t *testing.T) {
 	}
 }
 
+// newRouterWithDependencyDirectory 用一份带依赖目录的仓库组装路由。
+//
+// node_modules 是「按名字排除」要跳过的目录，src/node_modules 是同名的普通文件：
+// 两者放在不同的层，才能验证「只排除目录，同名文件照常返回」。
+func newRouterWithDependencyDirectory(t *testing.T) http.Handler {
+	t.Helper()
+
+	source := newTestLive(t, []string{testAPIKey})
+	repoDir := filepath.Join(source.snapshot.RepositoryDir, "example")
+	writeFile(t, repoDir, "node_modules/left-pad/index.js", "module.exports = {};\n")
+	writeFile(t, repoDir, "src/node_modules", "不是一个目录\n")
+
+	// 新文件要进同一份视图，因此按同一根目录重建 vault。
+	rebuilt, err := vault.New(source.snapshot.RepositoryDir, []string{"example"}, vault.DefaultLimits())
+	if err != nil {
+		t.Fatalf("vault.New() error = %v", err)
+	}
+	source.snapshot.Vault = rebuilt
+	return newRouterWith(t, source, nil, nil)
+}
+
+// treePathsOf 发一次目录请求，取出条目路径：顺序即服务端的展开顺序。
+func treePathsOf(t *testing.T, handler http.Handler, target string) []string {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, authorized(http.MethodGet, target))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("%s: status = %d, body = %s", target, recorder.Code, recorder.Body.String())
+	}
+	tree := decodeJSON[vault.Tree](t, recorder)
+	paths := make([]string, 0, len(tree.Entries))
+	for _, entry := range tree.Entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+// withinExcluded 判断一个条目是不是「被排除的目录本身或它里面的东西」。
+func withinExcluded(path string, excluded string) bool {
+	return path == excluded || strings.HasPrefix(path, excluded+"/")
+}
+
+func TestShowTreeExcludesNamedDirectories(t *testing.T) {
+	t.Parallel()
+
+	handler := newRouterWithDependencyDirectory(t)
+
+	// 不传 exclude：依赖目录照常出现在结果里，与改动前一致。
+	baseline := treePathsOf(t, handler, "/v1/repos/example/tree?depth=3")
+	wantBaseline := []string{
+		"docs", "docs/guide.md",
+		"node_modules", "node_modules/left-pad", "node_modules/left-pad/index.js",
+		"src", "src/node_modules",
+	}
+	if strings.Join(baseline, ",") != strings.Join(wantBaseline, ",") {
+		t.Fatalf("不带 exclude 的 entries = %#v, want %#v", baseline, wantBaseline)
+	}
+
+	// 传了 exclude：命中的目录连同内部一起消失，同名普通文件照常返回。
+	filtered := treePathsOf(t, handler, "/v1/repos/example/tree?depth=3&exclude=node_modules")
+	wantFiltered := []string{"docs", "docs/guide.md", "src", "src/node_modules"}
+	if strings.Join(filtered, ",") != strings.Join(wantFiltered, ",") {
+		t.Fatalf("带 exclude 的 entries = %#v, want %#v", filtered, wantFiltered)
+	}
+	for _, path := range filtered {
+		if withinExcluded(path, "node_modules") {
+			t.Fatalf("被排除的目录仍出现在结果里: %#v", filtered)
+		}
+	}
+
+	// 空值与多余逗号一律忽略：与不传是同一份结果。
+	for _, raw := range []string{"", "%2C%2C"} {
+		empty := treePathsOf(t, handler, "/v1/repos/example/tree?depth=3&exclude="+raw)
+		if strings.Join(empty, ",") != strings.Join(baseline, ",") {
+			t.Fatalf("exclude=%q 的 entries = %#v, want %#v", raw, empty, baseline)
+		}
+	}
+}
+
 func TestShowTreeRejectsInvalidFlag(t *testing.T) {
 	t.Parallel()
 

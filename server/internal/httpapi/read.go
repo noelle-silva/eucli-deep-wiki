@@ -60,6 +60,10 @@ func showRepository(source Live, states StateSource) http.HandlerFunc {
 	}
 }
 
+// showTree 展开目录。
+//
+// exclude 是调用方给的「按名字排除目录」清单：缺省为空表示不排除任何目录，
+// 因此老的调用方一个字都不用改。
 func showTree(source Live) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
@@ -73,6 +77,7 @@ func showTree(source Live) http.HandlerFunc {
 			Path:     values.Get("path"),
 			Depth:    parseCount(values.Get("depth")),
 			DirsOnly: dirsOnly,
+			Exclude:  vault.ParseExcludedDirs(values.Get("exclude")),
 		})
 		if treeErr != nil {
 			writeVaultError(w, treeErr)
