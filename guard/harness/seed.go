@@ -38,12 +38,18 @@ const (
 	// ReadmeLines 是 alpha README 的行数。
 	ReadmeLines = 8
 	// AlphaTextFiles 是标准现场里 alpha 可参与检索的文本文件数。
-	AlphaTextFiles = 4
+	AlphaTextFiles = 6
 	alphaReadme    = "README.md"
 	alphaGuide     = "docs/guide.md"
 	alphaNote      = "docs/deep/nested/note.txt"
 	alphaMain      = "src/main.go"
-	gammaSource    = "src/gamma.txt"
+	// alphaDependency 是「依赖目录」里的文件：目录名在排除名单里，内部还有一层。
+	alphaDependency = "node_modules/left-pad/index.js"
+	gammaSource     = "src/gamma.txt"
+	// ExcludedDirName 是标准现场里那个「按名字排除」的目录名：用例拿它当参数。
+	ExcludedDirName = "node_modules"
+	// SameNameFilePath 是与该目录同名、但不在同一层的普通文件：排除只作用于目录。
+	SameNameFilePath = "src/node_modules"
 	// ContextProbe 是「上下文行数上限」用例要用的文件：命中在中间，两侧各 14 行。
 	ContextProbe  = "context/around.md"
 	IndexFilePerm = 0o644
@@ -51,6 +57,17 @@ const (
 	// seedHTTPAddress 只用于配置校验：真实监听地址由 -http-address 给出。
 	seedHTTPAddress = "127.0.0.1:19997"
 )
+
+// AlphaTreePaths 是标准现场 alpha 在 depth 3 时的完整骨架，按展开顺序排列。
+//
+// 它是「不传 exclude 时目录接口行为不变」的比对基准：现场里有哪些条目、以什么
+// 顺序展开，都钉在这一份里，因此改动前后多一项、少一项、换一处顺序都会露出来。
+var AlphaTreePaths = []string{
+	"docs", "docs/deep", "docs/deep/nested", "docs/guide.md",
+	"node_modules", "node_modules/left-pad", "node_modules/left-pad/index.js",
+	"src", "src/main.go", "src/node_modules",
+	"README.md",
+}
 
 // seed 按现场种类铺磁盘。
 func (world *World) seed() error {
@@ -252,7 +269,11 @@ func (world *World) writeAlpha() error {
 		alphaGuide:  GuideContent,
 		alphaNote:   NoteContent,
 		alphaMain:   MainContent,
-		".git/HEAD": "ref: refs/heads/main\n",
+		// 依赖目录：名字在排除清单里，内部还有一层，用来验证「不返回也不进入遍历」。
+		alphaDependency: "module.exports = {};\n",
+		// 与依赖目录同名、但不在同一层的普通文件：排除只作用于目录。
+		SameNameFilePath: "不是一个目录\n",
+		".git/HEAD":      "ref: refs/heads/main\n",
 	}
 	files[".git/refs/heads/main"] = AlphaMainRevision + "\n"
 	files[".git/shallow"] = AlphaMainRevision + "\n"

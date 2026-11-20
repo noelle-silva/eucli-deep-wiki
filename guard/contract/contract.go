@@ -156,8 +156,10 @@ var Endpoints = []Endpoint{
 			queryValue("path", false, "展开起点，缺省为仓库根"),
 			queryFlag("depth", "1", "展开层数，硬上限 8"),
 			queryFlag("dirsOnly", "false", "只看目录"),
+			queryValue("exclude", false, "逗号分隔的目录名；命中的目录不返回、也不进入其内部遍历（只作用于目录，缺省不排除）"),
 		},
 		Fields: []string{"repo", "revision", "path", "depth", "entries", "truncated"}, Body: BodyJSON,
+		Note: "exclude 只按名字排除目录：同名普通文件照常返回；排除发生在遍历之前，不占条目配额。",
 	},
 	{
 		ID: "GET /v1/repos/{name}/file", Title: "读取文件（正文纯文本）",

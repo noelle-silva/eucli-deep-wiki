@@ -63,6 +63,15 @@ func APIChecks() []Check {
 			},
 		},
 		{
+			ID: "api.tree.exclude", Family: contract.FamilyAPI,
+			Title: "按名字排除目录：命中者连同内部一起消失，同名文件照常返回，不传时行为不变",
+			World: harness.KindStandard,
+			Run:   checkTreeExclude,
+			Guards: []contract.Guardian{
+				{Endpoint: "GET /v1/repos/{name}/tree", Side: contract.Server},
+			},
+		},
+		{
 			ID: "api.search.shape", Family: contract.FamilyAPI,
 			Title: "内容检索的字段与命中位置",
 			World: harness.KindStandard,
@@ -311,6 +320,164 @@ func checkTreeShape(world *harness.World, reporter *Reporter) {
 			break
 		}
 	}
+}
+
+// checkTreeExclude 目录排除：不传时行为不变，传了之后命中的目录连同内部一起消失，
+// 同名普通文件照常返回；排除发生在遍历之前，因此不占条目配额。
+func checkTreeExclude(world *harness.World, reporter *Reporter) {
+	endpoint := contract.MustEndpoint("GET /v1/repos/{name}/tree")
+	path := endpoint.Route(contract.RepoOnDisk)
+	// 展开到三层：要看见被排除目录的内部，才谈得上「不进入其内部遍历」。
+	const depth = "3"
+	excluded := harness.ExcludedDirName
+
+	baseline, ok := treeEntries(reporter, endpoint.ID+"（不传 exclude）", world.Get(path, harness.Query("depth", depth)), endpoint.Status)
+	if !ok {
+		return
+	}
+	baselinePaths := treePaths(baseline)
+	// 不传 exclude：整棵骨架与改动前逐字一致，命中候选的目录也在里面。
+	reporter.Equal(contract.Server, endpoint.ID+" 不传 exclude 时的条目",
+		strings.Join(harness.AlphaTreePaths, ","), strings.Join(baselinePaths, ","))
+
+	filtered, ok := treeEntries(reporter, endpoint.ID+"（exclude="+excluded+"）",
+		world.Get(path, harness.Query("depth", depth, "exclude", excluded)), endpoint.Status)
+	if !ok {
+		return
+	}
+	filteredPaths := treePaths(filtered)
+
+	// 命中的目录不返回，也不进入其内部遍历：它自己与它的子项一个都不该出现。
+	for _, entry := range filteredPaths {
+		if withinSubtree(entry, excluded) {
+			reporter.Mismatch(contract.Server, endpoint.ID+" 排除后仍出现的条目", "不含 "+excluded+" 及其内部", entry)
+			break
+		}
+	}
+	// 只作用于目录：同名普通文件照常返回。
+	if !containsPath(filteredPaths, harness.SameNameFilePath) {
+		reporter.Mismatch(contract.Server, endpoint.ID+" 排除后同名普通文件的路径",
+			harness.SameNameFilePath, strings.Join(filteredPaths, ","))
+	}
+	// 消失的恰好是被排除的那一段，其余条目一项不少、顺序不变。
+	reporter.Equal(contract.Server, endpoint.ID+" 排除后的条目",
+		strings.Join(withoutSubtree(baselinePaths, excluded), ","), strings.Join(filteredPaths, ","))
+
+	// 写法不同、结果必须相同：空串与只剩逗号等于不排除；大小写与空项不影响命中。
+	sameAs := []struct {
+		raw  string
+		want []string
+	}{
+		{raw: "", want: baselinePaths},
+		{raw: " , ,", want: baselinePaths},
+		{raw: strings.ToUpper(excluded), want: filteredPaths},
+		{raw: ", " + strings.ToUpper(excluded) + " ,,", want: filteredPaths},
+	}
+	for _, testCase := range sameAs {
+		entries, ok := treeEntries(reporter, fmt.Sprintf("%s（exclude=%q）", endpoint.ID, testCase.raw),
+			world.Get(path, harness.Query("depth", depth, "exclude", testCase.raw)), endpoint.Status)
+		if !ok {
+			return
+		}
+		reporter.Equal(contract.Server, fmt.Sprintf("%s exclude=%q 的条目", endpoint.ID, testCase.raw),
+			strings.Join(testCase.want, ","), strings.Join(treePaths(entries), ","))
+	}
+
+	// 与 depth 一起用：只展开一层时，被排除的目录在这一层就不出现，别的照常。
+	rootOnly := make([]string, 0, len(baselinePaths))
+	for _, entry := range baselinePaths {
+		if !strings.Contains(entry, "/") {
+			rootOnly = append(rootOnly, entry)
+		}
+	}
+	shallow, ok := treeEntries(reporter, endpoint.ID+"（depth=1 且 exclude="+excluded+"）",
+		world.Get(path, harness.Query("depth", "1", "exclude", excluded)), endpoint.Status)
+	if !ok {
+		return
+	}
+	reporter.Equal(contract.Server, endpoint.ID+" depth=1 且带 exclude 的条目",
+		strings.Join(withoutSubtree(rootOnly, excluded), ","), strings.Join(treePaths(shallow), ","))
+
+	// 与 dirsOnly 一起用：只剩目录，被排除的目录同样不出现。
+	skeleton, ok := treeEntries(reporter, endpoint.ID+"（dirsOnly 且 exclude="+excluded+"）",
+		world.Get(path, harness.Query("depth", depth, "dirsOnly", "true", "exclude", excluded)), endpoint.Status)
+	if !ok {
+		return
+	}
+	for _, entry := range skeleton {
+		if textOf(entry, "type") != "dir" {
+			reporter.Mismatch(contract.Server, endpoint.ID+" dirsOnly 且带 exclude 时的条目", "只有目录", textOf(entry, "path"))
+			break
+		}
+	}
+	reporter.Equal(contract.Server, endpoint.ID+" dirsOnly 且带 exclude 的条目",
+		strings.Join(dirPaths(filtered), ","), strings.Join(treePaths(skeleton), ","))
+}
+
+// treeEntries 取一次目录展开的条目对象；状态码或正文不对时报告并返回 false。
+func treeEntries(reporter *Reporter, fact string, message harness.Message, wantStatus int) ([]map[string]any, bool) {
+	object, ok := requireJSON(reporter, fact, message, wantStatus)
+	if !ok {
+		return nil, false
+	}
+	raw := arrayField(reporter, fact+" 响应字段 entries", object, "entries")
+	entries := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			reporter.Mismatch(contract.Server, fact+" 的条目", "一个 JSON 对象", fmt.Sprintf("%T", item))
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries, true
+}
+
+// treePaths 把条目压成路径列表，保持服务端给出的顺序。
+func treePaths(entries []map[string]any) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, textOf(entry, "path"))
+	}
+	return paths
+}
+
+// dirPaths 只取目录条目的路径。
+func dirPaths(entries []map[string]any) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if textOf(entry, "type") == "dir" {
+			paths = append(paths, textOf(entry, "path"))
+		}
+	}
+	return paths
+}
+
+// withinSubtree 判断一个路径是不是「某个目录本身或它里面的东西」。
+func withinSubtree(path string, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+"/")
+}
+
+// withoutSubtree 去掉某个目录本身与它里面的全部条目。
+func withoutSubtree(paths []string, dir string) []string {
+	kept := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if withinSubtree(path, dir) {
+			continue
+		}
+		kept = append(kept, path)
+	}
+	return kept
+}
+
+// containsPath 判断路径列表里有没有这一项。
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
 }
 
 // checkSearchShape 内容检索的字段与命中位置。
