@@ -487,7 +487,7 @@ curl -H "Authorization: Bearer <key>" http://127.0.0.1:9997/v1/repos
 | `GET /status` | 同步状态与运行期状态 |
 | `GET /v1/repos` | 名单总览：分支、提交、浅克隆、上次同步时间、体积、保护状态，以及名单声明的事实 |
 | `GET /v1/repos/{name}` | 单个仓库的元数据 |
-| `GET /v1/repos/{name}/tree?path=&depth=&dirsOnly=` | 目录树，目录优先，隐藏 `.git`；`depth` 一次展开多层 |
+| `GET /v1/repos/{name}/tree?path=&depth=&dirsOnly=&exclude=` | 目录树，目录优先，隐藏 `.git`；`depth` 一次展开多层；`exclude` 收逗号分隔的目录名，命中的目录不返回也不进入遍历（只认名字，不预设什么算依赖；不传则行为与以前完全一致） |
 | `GET /v1/repos/{name}/file?path=&lines=&maxBytes=` | 读取文本文件，可按行切段、按字节限长 |
 | `GET /v1/repos/{name}/search?q=&path=&offset=&limit=&context=` | 按行子串检索：限定目录、翻页、带上下文行 |
 | `GET /v1/repos/{name}/find?name=&path=&match=&limit=&offset=` | 按文件名查找：默认精确，`match=substring` 改为包含 |
@@ -705,11 +705,26 @@ eucli-dw config path          # 打印配置文件位置
 | 命令 | 作用 | 走哪个接口 |
 | --- | --- | --- |
 | `repos [--sort name\|time\|size] [--json]` | 仓库清单：分支、提交、上次同步、体积、状态标记 | `GET /v1/repos` |
-| `overview [参数] <仓库>` | 目录骨架 + README 开头 + 清单文件 | `GET /v1/repos/{name}` + `/tree` + `/file` |
-| `tree [参数] <仓库> [目录]` | 列目录，可一次展开多层 | `GET /v1/repos/{name}/tree` |
+| `overview [参数] <仓库>` | 目录骨架 + README 开头 + 清单文件；默认压掉依赖与缓存目录 | `GET /v1/repos/{name}` + `/tree` + `/file` |
+| `tree [参数] <仓库> [目录...]` | 列目录，可一次展开多层、一次给多个目录 | `GET /v1/repos/{name}/tree` |
 | `get [参数] <仓库> <路径>...` | 读文件，可多路径、可切段、可限长 | `GET /v1/repos/{name}/file` |
 | `search [参数] <仓库> <关键词>` | 按内容检索 | `GET /v1/repos/{name}/search` |
 | `find [参数] <仓库> <文件名>` | 按文件名查找 | `GET /v1/repos/{name}/find` |
+
+**多目录与依赖噪声**
+
+`tree` 的位置参数是「仓库名 + 任意多个目录」，不给目录等同于只看仓库根。多目录时输出按命令行给的顺序分段，段头形如 `==> src <==`，与 `get` 多路径同一套写法；并发取，与谁先返回无关。某一段失败不拖垮整次调用：成功的照常输出，失败的逐段说明，退出码取第一个失败。
+
+`tree` 与 `overview` 默认不列出一批**确定属于第三方依赖或缓存**的目录，免得 `node_modules` 之类把目录骨架和条目配额一起吃掉：
+
+```
+node_modules  bower_components  jspm_packages  vendor  godeps
+.venv  venv  __pycache__  .tox  .mypy_cache  .pytest_cache  .ruff_cache
+target  .gradle  .cargo  .next  .nuxt  .turbo  .parcel-cache  pods
+.cache  .sass-cache
+```
+
+规则：只按目录名精确匹配（大小写不敏感），同名**文件**照常返回；这份清单只在命令行侧，服务端不认识「依赖」这个概念，它只提供按名字排除的通用能力。想连它们一起看就加 `--all`。默认被排除这件事会在标准错误里说明一句，数据一路保持干净，管道里不会掺提示。
 
 **服务端状态与动作**
 
