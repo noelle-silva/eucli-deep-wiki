@@ -3,8 +3,7 @@
 这个模块不属于任何一侧：它谁也不被谁依赖，却同时认识两侧，用**真实的服务端程序**
 与**真实的命令行程序**核对同一份契约。
 
-契约出处只有一份：[`../../.dev-management/task-management/180-eucli-deep-wiki-split/contract.md`](../../.dev-management/task-management/180-eucli-deep-wiki-split/contract.md)。
-本模块把那份文件里的事实抄成可执行的形式（`contract/` 包），两侧的实现必须满足它。
+本模块在 `contract/` 包中维护可执行的契约定义，两侧的实现必须满足它。
 
 ## 怎么跑
 
